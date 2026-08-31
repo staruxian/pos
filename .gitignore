@@ -1,0 +1,12 @@
+node_modules
+dist
+data
+*.db
+*.db-wal
+*.db-shm
+.env*
+!.env.example
+.DS_Store
+.next
+.vinext
+.wrangler
