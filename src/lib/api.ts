@@ -46,7 +46,15 @@ export type ClientLedgerEntry = {
 export type ClientDetails = Client & { ledger: ClientLedgerEntry[] };
 
 async function parse<T>(res: Response): Promise<T> {
-  const data = await res.json();
+  const contentType = res.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(
+      res.status === 404
+        ? "API не найден. Проверьте настройки Vercel Functions"
+        : `Сервер вернул неожиданный ответ (${res.status})`,
+    );
+  }
+  const data = (await res.json()) as T | { error?: string };
   if (!res.ok) throw new Error((data as { error?: string }).error || "Не удалось выполнить запрос");
   return data as T;
 }

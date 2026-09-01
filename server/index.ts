@@ -57,7 +57,7 @@ function todayRange() {
   return { from: fmt(start), to: fmt(end) };
 }
 
-async function handle(req: Request): Promise<Response> {
+export async function handle(req: Request): Promise<Response> {
   const url = new URL(req.url);
   const { pathname } = url;
   const method = req.method;
@@ -415,28 +415,32 @@ async function handle(req: Request): Promise<Response> {
   return error("Страница не найдена", 404);
 }
 
-Bun.serve({
-  port: PORT,
-  hostname: "127.0.0.1",
-  async fetch(req) {
-    if (req.method === "OPTIONS") {
-      return new Response(null, {
-        headers: {
-          "access-control-allow-origin": "*",
-          "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
-          "access-control-allow-headers": "content-type",
-        },
-      });
-    }
-    try {
-      const res = await handle(req);
-      res.headers.set("access-control-allow-origin", "*");
-      return res;
-    } catch (e) {
-      console.error(e);
-      return error("Ошибка сервера", 500);
-    }
-  },
-});
+export async function fetchApi(req: Request): Promise<Response> {
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      headers: {
+        "access-control-allow-origin": "*",
+        "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
+        "access-control-allow-headers": "content-type",
+      },
+    });
+  }
+  try {
+    const res = await handle(req);
+    res.headers.set("access-control-allow-origin", "*");
+    return res;
+  } catch (e) {
+    console.error(e);
+    return error("Ошибка сервера", 500);
+  }
+}
 
-console.log(`Сервер кассы: http://127.0.0.1:${PORT}`);
+if (import.meta.main) {
+  Bun.serve({
+    port: PORT,
+    hostname: "127.0.0.1",
+    fetch: fetchApi,
+  });
+
+  console.log(`Сервер кассы: http://127.0.0.1:${PORT}`);
+}

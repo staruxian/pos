@@ -72,7 +72,8 @@ export function App() {
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-10">
         {loadError && (
           <p className="mb-6 rounded-2xl border border-destructive/20 bg-destructive/8 px-4 py-3 text-sm">
-            {loadError}. Запустите сервер командой <code>bun run dev:server</code>.
+            {loadError}.
+            {import.meta.env.DEV && <> Запустите локальный сервер командой <code>bun run dev:server</code>.</>}
           </p>
         )}
         <Outlet
