@@ -279,11 +279,13 @@ export function ProductsPage({
                 <DialogDescription>{[barcodeProduct.category, barcodeProduct.size, barcodeProduct.color].filter(Boolean).join(" · ")} · формат Code 128</DialogDescription>
               </DialogHeader>
               <div className="flex flex-col items-center gap-3">
-                <img
-                  src={`/api/products/${barcodeProduct.id}/barcode`}
-                  alt={`Штрихкод товара ${barcodeProduct.name}`}
-                  className="h-auto w-full max-w-sm rounded-2xl border bg-white p-4"
-                />
+                <div className="barcode-print w-full max-w-sm rounded-2xl border bg-white p-4">
+                  <img
+                    src={`/api/products/${barcodeProduct.id}/barcode`}
+                    alt={`Штрихкод товара ${barcodeProduct.name}`}
+                    className="h-auto w-full"
+                  />
+                </div>
                 <p className="font-mono text-sm">{barcodeProduct.sku}</p>
                 <Button variant="outline" onClick={() => window.print()}>
                   Печать
