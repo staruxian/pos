@@ -59,7 +59,9 @@ function todayRange() {
 
 export async function handle(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  const { pathname } = url;
+  // На Vercel все запросы /api/* переписываются на одну функцию,
+  // а исходный путь приходит в параметре __path.
+  const pathname = url.searchParams.get("__path") ?? url.pathname;
   const method = req.method;
 
   if (method === "GET" && pathname === "/api/health") {
