@@ -42,7 +42,7 @@ export function App() {
               <Shirt className="size-[18px]" />
             </div>
             <div>
-              <h1 className="text-[17px] font-bold tracking-[-0.04em]">НИТЬ</h1>
+              <h1 className="text-[17px] font-bold tracking-[-0.04em]">Shaxzoda Premium</h1>
               <p className="text-xs text-muted-foreground">Магазин одежды</p>
             </div>
           </Link>
