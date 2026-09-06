@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import { Barcode, Pencil, Plus, Search, Shirt, Trash2 } from "lucide-react";
 import { api, type Product } from "@/lib/api";
-import { money } from "@/lib/utils";
+import { printLabel } from "@/lib/printer";
+import { cn, money } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -39,6 +40,8 @@ export function ProductsPage({
   const [form, setForm] = useState<Form>(empty);
   const [barcodeProduct, setBarcodeProduct] = useState<Product | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [printing, setPrinting] = useState(false);
+  const [printResult, setPrintResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [query, setQuery] = useState("");
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -106,6 +109,22 @@ export function ProductsPage({
       onChange();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Не удалось сохранить товар");
+    }
+  }
+
+  async function sendToPrinter(p: Product) {
+    setPrinting(true);
+    setPrintResult(null);
+    try {
+      await printLabel({ data: p.sku, text: p.name });
+      setPrintResult({ ok: true, message: "Этикетка отправлена на принтер" });
+    } catch (err) {
+      setPrintResult({
+        ok: false,
+        message: err instanceof Error ? err.message : "Не удалось напечатать этикетку",
+      });
+    } finally {
+      setPrinting(false);
     }
   }
 
@@ -270,7 +289,15 @@ export function ProductsPage({
         </DialogContent>
       </Dialog>
 
-      <Dialog open={!!barcodeProduct} onOpenChange={(v) => !v && setBarcodeProduct(null)}>
+      <Dialog
+        open={!!barcodeProduct}
+        onOpenChange={(v) => {
+          if (!v) {
+            setBarcodeProduct(null);
+            setPrintResult(null);
+          }
+        }}
+      >
         <DialogContent>
           {barcodeProduct && (
             <>
@@ -279,7 +306,7 @@ export function ProductsPage({
                 <DialogDescription>{[barcodeProduct.category, barcodeProduct.size, barcodeProduct.color].filter(Boolean).join(" · ")} · формат Code 128</DialogDescription>
               </DialogHeader>
               <div className="flex flex-col items-center gap-3">
-                <div className="barcode-print w-full max-w-sm rounded-2xl border bg-white p-4">
+                <div className="w-full max-w-sm rounded-2xl border bg-white p-4">
                   <img
                     src={`/api/products/${barcodeProduct.id}/barcode`}
                     alt={`Штрихкод товара ${barcodeProduct.name}`}
@@ -287,9 +314,14 @@ export function ProductsPage({
                   />
                 </div>
                 <p className="font-mono text-sm">{barcodeProduct.sku}</p>
-                <Button variant="outline" onClick={() => window.print()}>
-                  Печать
+                <Button variant="outline" disabled={printing} onClick={() => void sendToPrinter(barcodeProduct)}>
+                  {printing ? "Печать…" : "Печать"}
                 </Button>
+                {printResult && (
+                  <p className={cn("text-sm", printResult.ok ? "text-muted-foreground" : "text-destructive")}>
+                    {printResult.message}
+                  </p>
+                )}
               </div>
             </>
           )}
