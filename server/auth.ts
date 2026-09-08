@@ -8,14 +8,24 @@ const posPassword = () => process.env.POS_PASSWORD;
 const sessionSecret = () => process.env.SESSION_SECRET;
 
 /**
- * Проверяем настройки, но НЕ бросаем на этапе импорта: иначе функция падает целиком,
- * ещё до маршрутизации, и наружу уходит безликий 500 даже на /api/health. Вместо этого
- * каждый маршрут отвечает 503 с понятной причиной — доступ при этом всё равно закрыт.
+ * Вход по паролю включается наличием POS_PASSWORD и SESSION_SECRET. Если их нет,
+ * касса работает без пароля и API открыт всем, у кого есть адрес.
+ */
+export function authEnabled() {
+  return Boolean(posPassword() && sessionSecret());
+}
+
+/**
+ * Ошибка — только если вход настроен наполовину: заполнить одну переменную из двух
+ * почти наверняка означает, что пароль хотели включить. Проверяем на каждом запросе,
+ * а не при импорте: иначе функция падает целиком, ещё до маршрутизации, и наружу
+ * уходит безликий 500 даже на /api/health.
  */
 export function authConfigError(): string | null {
   const password = posPassword();
   const secret = sessionSecret();
-  if (!password || !secret) return "не заданы POS_PASSWORD и SESSION_SECRET";
+  if (!password && !secret) return null;
+  if (!password || !secret) return "задана только одна из POS_PASSWORD и SESSION_SECRET";
   if (secret.length < 32) return "SESSION_SECRET короче 32 символов";
   return null;
 }
@@ -71,7 +81,9 @@ async function equals(a: string, b: string) {
 }
 
 export function checkPassword(candidate: unknown) {
-  if (authConfigError() || typeof candidate !== "string") return Promise.resolve(false);
+  if (!authEnabled() || authConfigError() || typeof candidate !== "string") {
+    return Promise.resolve(false);
+  }
   return equals(candidate, posPassword()!);
 }
 
@@ -101,7 +113,7 @@ function readCookie(header: string | null, name: string) {
 }
 
 export async function hasSession(req: Request) {
-  if (authConfigError()) return false;
+  if (!authEnabled() || authConfigError()) return false;
   const token = readCookie(req.headers.get("cookie"), SESSION_COOKIE);
   return token ? isValidToken(token) : false;
 }
