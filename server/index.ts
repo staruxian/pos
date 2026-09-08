@@ -1,6 +1,7 @@
 import { db, withTransaction, type Client, type ClientLedgerEntry, type Product } from "./db";
 import bwipjs from "bwip-js/node";
 import {
+  authConfigError,
   checkPassword,
   clearCookie,
   createSessionToken,
@@ -104,9 +105,14 @@ export async function handle(req: Request): Promise<Response> {
   if (pathname === null) return error("Некорректный путь запроса");
   const method = req.method;
 
+  // Health отвечает всегда — по нему видно, из-за чего касса не поднимается.
+  const configError = authConfigError();
   if (method === "GET" && pathname === "/api/health") {
-    return json({ ok: true });
+    return configError ? json({ ok: false, error: configError }, 503) : json({ ok: true });
   }
+
+  // Без настроек вход невозможен, поэтому закрыто всё остальное.
+  if (configError) return error(`Сервер не настроен: ${configError}`, 503);
 
   if (method === "GET" && pathname === "/api/session") {
     return json({ authenticated: await hasSession(req) });

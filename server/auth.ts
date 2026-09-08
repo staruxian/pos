@@ -4,27 +4,36 @@
 const password = process.env.POS_PASSWORD;
 const secret = process.env.SESSION_SECRET;
 
-if (!password || !secret) {
-  throw new Error(
-    "Не заданы POS_PASSWORD и SESSION_SECRET. Смотрите .env.example",
-  );
-}
-
-if (secret.length < 32) {
-  throw new Error("SESSION_SECRET должен быть длиной не менее 32 символов");
+/**
+ * Проверяем настройки, но НЕ бросаем на этапе импорта: иначе функция падает целиком,
+ * ещё до маршрутизации, и наружу уходит безликий 500 даже на /api/health. Вместо этого
+ * каждый маршрут отвечает 503 с понятной причиной — доступ при этом всё равно закрыт.
+ */
+export function authConfigError(): string | null {
+  if (!password || !secret) return "не заданы POS_PASSWORD и SESSION_SECRET";
+  if (secret.length < 32) return "SESSION_SECRET короче 32 символов";
+  return null;
 }
 
 export const SESSION_COOKIE = "pos_session";
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 const encoder = new TextEncoder();
-const key = await crypto.subtle.importKey(
-  "raw",
-  encoder.encode(secret),
-  { name: "HMAC", hash: "SHA-256" },
-  false,
-  ["sign"],
-);
+
+// Ключ создаётся при первом обращении, а не на верхнем уровне модуля: top-level await
+// в бессерверной сборке — лишний риск на ровном месте.
+let keyPromise: Promise<CryptoKey> | null = null;
+
+function hmacKey() {
+  keyPromise ??= crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret!),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  return keyPromise;
+}
 
 function base64url(bytes: ArrayBuffer) {
   return btoa(String.fromCharCode(...new Uint8Array(bytes)))
@@ -34,7 +43,7 @@ function base64url(bytes: ArrayBuffer) {
 }
 
 async function sign(payload: string) {
-  return base64url(await crypto.subtle.sign("HMAC", key, encoder.encode(payload)));
+  return base64url(await crypto.subtle.sign("HMAC", await hmacKey(), encoder.encode(payload)));
 }
 
 /** Сравнение за постоянное время: сначала хешируем, чтобы не утекала длина. */
@@ -51,7 +60,7 @@ async function equals(a: string, b: string) {
 }
 
 export function checkPassword(candidate: unknown) {
-  if (typeof candidate !== "string") return Promise.resolve(false);
+  if (authConfigError() || typeof candidate !== "string") return Promise.resolve(false);
   return equals(candidate, password!);
 }
 
@@ -81,6 +90,7 @@ function readCookie(header: string | null, name: string) {
 }
 
 export async function hasSession(req: Request) {
+  if (authConfigError()) return false;
   const token = readCookie(req.headers.get("cookie"), SESSION_COOKIE);
   return token ? isValidToken(token) : false;
 }
