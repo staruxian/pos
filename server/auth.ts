@@ -1,8 +1,11 @@
 // Аутентификация кассы: один общий пароль магазина и подписанная сессия в cookie.
 // Токен не хранится в базе — он самодостаточен: срок жизни + HMAC-подпись.
 
-const password = process.env.POS_PASSWORD;
-const secret = process.env.SESSION_SECRET;
+// process.env читаем на каждом обращении, а не при загрузке модуля: Vercel фиксирует
+// переменные в момент создания деплоя, и значение, добавленное позже, на верхнем
+// уровне модуля может не увидеться.
+const posPassword = () => process.env.POS_PASSWORD;
+const sessionSecret = () => process.env.SESSION_SECRET;
 
 /**
  * Проверяем настройки, но НЕ бросаем на этапе импорта: иначе функция падает целиком,
@@ -10,6 +13,8 @@ const secret = process.env.SESSION_SECRET;
  * каждый маршрут отвечает 503 с понятной причиной — доступ при этом всё равно закрыт.
  */
 export function authConfigError(): string | null {
+  const password = posPassword();
+  const secret = sessionSecret();
   if (!password || !secret) return "не заданы POS_PASSWORD и SESSION_SECRET";
   if (secret.length < 32) return "SESSION_SECRET короче 32 символов";
   return null;
@@ -22,17 +27,23 @@ const encoder = new TextEncoder();
 
 // Ключ создаётся при первом обращении, а не на верхнем уровне модуля: top-level await
 // в бессерверной сборке — лишний риск на ровном месте.
-let keyPromise: Promise<CryptoKey> | null = null;
+let cachedKey: { secret: string; key: Promise<CryptoKey> } | null = null;
 
 function hmacKey() {
-  keyPromise ??= crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret!),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  return keyPromise;
+  const secret = sessionSecret()!;
+  if (!cachedKey || cachedKey.secret !== secret) {
+    cachedKey = {
+      secret,
+      key: crypto.subtle.importKey(
+        "raw",
+        encoder.encode(secret),
+        { name: "HMAC", hash: "SHA-256" },
+        false,
+        ["sign"],
+      ),
+    };
+  }
+  return cachedKey.key;
 }
 
 function base64url(bytes: ArrayBuffer) {
@@ -61,7 +72,7 @@ async function equals(a: string, b: string) {
 
 export function checkPassword(candidate: unknown) {
   if (authConfigError() || typeof candidate !== "string") return Promise.resolve(false);
-  return equals(candidate, password!);
+  return equals(candidate, posPassword()!);
 }
 
 export async function createSessionToken() {
