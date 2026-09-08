@@ -108,7 +108,18 @@ export async function handle(req: Request): Promise<Response> {
   // Health отвечает всегда — по нему видно, из-за чего касса не поднимается.
   const configError = authConfigError();
   if (method === "GET" && pathname === "/api/health") {
-    return configError ? json({ ok: false, error: configError }, 503) : json({ ok: true });
+    if (!configError) return json({ ok: true });
+    // Временная диагностика: только ИМЕНА переменных, которые видит функция.
+    // Значения не отдаём никогда. Убрать, когда касса поднимется.
+    return json(
+      {
+        ok: false,
+        error: configError,
+        visibleNames: Object.keys(process.env).filter((k) => /^(POS_|SESSION_|TURSO_)/.test(k)).sort(),
+        envCount: Object.keys(process.env).length,
+      },
+      503,
+    );
   }
 
   // Без настроек вход невозможен, поэтому закрыто всё остальное.
