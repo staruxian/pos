@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Barcode, Pencil, Plus, Search, Shirt, Trash2 } from "lucide-react";
 import { api, type Product } from "@/lib/api";
 import { printLabel } from "@/lib/printer";
-import { cn, money } from "@/lib/utils";
+import { cn, fromMinor, money, toMinor } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -65,7 +65,7 @@ export function ProductsPage({
     setEditing(p);
     setForm({
       name: p.name,
-      price: String(p.price),
+      price: fromMinor(p.price),
       stock: String(p.stock),
       sku: p.sku,
       category: p.category,
@@ -78,10 +78,10 @@ export function ProductsPage({
 
   async function save() {
     setError(null);
-    const price = Number(form.price);
+    const price = toMinor(form.price);
     const stock = Number(form.stock);
     if (!form.name.trim()) return setError("Укажите название");
-    if (!Number.isFinite(price) || price < 0) return setError("Укажите корректную цену");
+    if (price === null) return setError("Укажите корректную цену");
     if (!Number.isInteger(stock) || stock < 0) return setError("Количество должно быть целым числом");
     try {
       if (editing) {

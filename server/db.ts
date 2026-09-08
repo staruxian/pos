@@ -22,7 +22,7 @@ const schema = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sku TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
-    price REAL NOT NULL,
+    price INTEGER NOT NULL,
     stock INTEGER NOT NULL DEFAULT 0,
     category TEXT NOT NULL DEFAULT 'Без категории',
     size TEXT NOT NULL DEFAULT '',
@@ -32,7 +32,7 @@ const schema = [
   `CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    total REAL NOT NULL
+    total INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS sale_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +41,7 @@ const schema = [
     product_name TEXT NOT NULL,
     sku TEXT NOT NULL,
     qty INTEGER NOT NULL,
-    unit_price REAL NOT NULL
+    unit_price INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS clients (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,12 +53,16 @@ const schema = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     client_id INTEGER NOT NULL REFERENCES clients(id),
     kind TEXT NOT NULL CHECK (kind IN ('debt', 'payment')),
-    amount REAL NOT NULL CHECK (amount > 0),
+    amount INTEGER NOT NULL CHECK (amount > 0),
     note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_client_ledger_client_id
     ON client_ledger(client_id, id DESC)`,
+  `CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
 ];
 
 async function initializeDatabase() {
@@ -87,6 +91,50 @@ async function initializeDatabase() {
     ],
     "write",
   );
+
+  await migrateMoneyToMinorUnits();
+}
+
+const MONEY_MIGRATION = "money-minor-units-v1";
+
+/**
+ * Раньше суммы хранились как REAL и накапливали ошибку округления, поэтому сравнение
+ * долга приходилось делать с допуском. Теперь всё хранится в тийинах целым числом.
+ *
+ * Миграция одноразовая и необратимая: суммы умножаются на 100. Отметка в `meta`
+ * ставится в той же транзакции, поэтому повторный (в том числе одновременный на
+ * нескольких инстансах) запуск ничего не пересчитает.
+ */
+async function migrateMoneyToMinorUnits() {
+  const done = await client.execute({
+    sql: "SELECT 1 FROM meta WHERE key = ?",
+    args: [MONEY_MIGRATION],
+  });
+  if (done.rows.length) return;
+
+  const tx = await client.transaction("write");
+  try {
+    const again = await tx.execute({
+      sql: "SELECT 1 FROM meta WHERE key = ?",
+      args: [MONEY_MIGRATION],
+    });
+    if (!again.rows.length) {
+      await tx.execute("UPDATE products SET price = CAST(ROUND(price * 100) AS INTEGER)");
+      await tx.execute("UPDATE sales SET total = CAST(ROUND(total * 100) AS INTEGER)");
+      await tx.execute("UPDATE sale_items SET unit_price = CAST(ROUND(unit_price * 100) AS INTEGER)");
+      await tx.execute("UPDATE client_ledger SET amount = CAST(ROUND(amount * 100) AS INTEGER)");
+      await tx.execute({
+        sql: "INSERT INTO meta (key, value) VALUES (?, datetime('now', 'localtime'))",
+        args: [MONEY_MIGRATION],
+      });
+    }
+    await tx.commit();
+  } catch (error) {
+    if (!tx.closed) await tx.rollback();
+    throw error;
+  } finally {
+    tx.close();
+  }
 }
 
 export const dbReady = initializeDatabase();
@@ -147,6 +195,7 @@ export type Product = {
   id: number;
   sku: string;
   name: string;
+  /** Цена в тийинах (1/100 сума), целое число. */
   price: number;
   stock: number;
   category: string;
@@ -166,6 +215,7 @@ export type ClientLedgerEntry = {
   id: number;
   client_id: number;
   kind: "debt" | "payment";
+  /** Сумма в тийинах (1/100 сума), целое число. */
   amount: number;
   note: string;
   created_at: string;

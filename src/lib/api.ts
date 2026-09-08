@@ -2,6 +2,7 @@ export type Product = {
   id: number;
   sku: string;
   name: string;
+  /** Цена в тийинах (1/100 сума). Форматируйте через money(). */
   price: number;
   stock: number;
   category: string;
@@ -38,6 +39,7 @@ export type ClientLedgerEntry = {
   id: number;
   client_id: number;
   kind: "debt" | "payment";
+  /** Сумма в тийинах (1/100 сума). */
   amount: number;
   note: string;
   created_at: string;
@@ -45,7 +47,16 @@ export type ClientLedgerEntry = {
 
 export type ClientDetails = Client & { ledger: ClientLedgerEntry[] };
 
+/** Сессия истекла или её не было — App перерисуется на экран входа. */
+export class UnauthorizedError extends Error {}
+
+export const UNAUTHORIZED_EVENT = "pos:unauthorized";
+
 async function parse<T>(res: Response): Promise<T> {
+  if (res.status === 401) {
+    window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    throw new UnauthorizedError("Требуется вход в систему");
+  }
   const contentType = res.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) {
     throw new Error(
@@ -60,6 +71,22 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 export const api = {
+  session: () => fetch("/api/session").then((r) => parse<{ authenticated: boolean }>(r)),
+  /** Не использует parse(): 401 здесь означает «неверный пароль», а не потерю сессии. */
+  login: async (password: string) => {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    if (res.ok) return;
+    const detail = await res
+      .json()
+      .then((body: { error?: string }) => body.error)
+      .catch(() => null);
+    throw new Error(detail || "Не удалось войти");
+  },
+  logout: () => fetch("/api/logout", { method: "POST" }).then((r) => parse<{ ok: boolean }>(r)),
   products: () => fetch("/api/products").then((r) => parse<Product[]>(r)),
   productByBarcode: (barcode: string) =>
     fetch(`/api/products/barcode/${encodeURIComponent(barcode)}`).then((r) => parse<Product>(r)),
