@@ -14,7 +14,7 @@ import {
   WalletCards,
 } from "lucide-react";
 import { api, type Client, type ClientDetails } from "@/lib/api";
-import { money } from "@/lib/utils";
+import { fromMinor, money, toMinor } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -161,15 +161,15 @@ export function ClientsPage() {
 
   function startOperation(kind: Operation) {
     setOperation(kind);
-    setAmount(kind === "payment" && details ? String(details.balance) : "");
+    setAmount(kind === "payment" && details ? fromMinor(details.balance) : "");
     setNote("");
     setOperationError(null);
   }
 
   async function saveOperation() {
     if (!details || !operation) return;
-    const value = Number(amount);
-    if (!Number.isFinite(value) || value <= 0) {
+    const value = toMinor(amount);
+    if (value === null || value <= 0) {
       return setOperationError("Введите сумму больше нуля");
     }
     setBusy(true);

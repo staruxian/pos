@@ -1,12 +1,35 @@
 import { db, withTransaction, type Client, type ClientLedgerEntry, type Product } from "./db";
 import bwipjs from "bwip-js/node";
+import {
+  checkPassword,
+  clearCookie,
+  createSessionToken,
+  hasSession,
+  sessionCookie,
+} from "./auth";
+import {
+  BadJson,
+  BodyTooLarge,
+  clientIp,
+  isUniqueViolation,
+  randomDigits,
+  rateLimit,
+  readJson,
+  resolvePath,
+} from "./security";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
-function json(data: unknown, status = 200) {
+// Заголовки, которые должны стоять на каждом ответе API.
+const baseHeaders = {
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer",
+};
+
+function json(data: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...baseHeaders, ...headers },
   });
 }
 
@@ -15,19 +38,34 @@ function error(message: string, status = 400) {
 }
 
 function parseBody<T>(req: Request): Promise<T> {
-  return req.json() as Promise<T>;
+  return readJson<T>(req);
+}
+
+/** Обрезает строку и ограничивает длину; undefined, если поле не передали. */
+function trimmed(value: unknown, max = 200) {
+  return typeof value === "string" ? value.trim().slice(0, max) : undefined;
+}
+
+// Деньги везде — целое число тийинов (1/100 сума). Потолок отсекает мусор и переполнение.
+const MAX_MINOR = 1e12;
+
+function parseMinor(value: unknown) {
+  const amount = Number(value);
+  if (!Number.isInteger(amount) || amount < 0 || amount > MAX_MINOR) return null;
+  return amount;
 }
 
 function normalizeBarcode(value?: string) {
   const digits = value?.trim();
   if (!digits) return null;
+  if (digits.length > 64) throw new Error("Штрихкод слишком длинный");
   if (/^\d+$/.test(digits)) return digits;
   throw new Error("Штрихкод может содержать только цифры");
 }
 
 async function newBarcode() {
   while (true) {
-    const barcode = `${Date.now()}`.slice(-8) + String(Math.floor(Math.random() * 10_000)).padStart(4, "0");
+    const barcode = randomDigits(12);
     if (!(await db.query("SELECT 1 FROM products WHERE sku = ?").get(barcode))) return barcode;
   }
 }
@@ -57,15 +95,41 @@ function todayRange() {
   return { from: fmt(start), to: fmt(end) };
 }
 
+// Маршруты, доступные без входа в систему.
+const publicPaths = new Set(["/api/health", "/api/login", "/api/logout", "/api/session"]);
+
 export async function handle(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  // На Vercel все запросы /api/* переписываются на одну функцию,
-  // а исходный путь приходит в параметре __path.
-  const pathname = url.searchParams.get("__path") ?? url.pathname;
+  const pathname = resolvePath(url);
+  if (pathname === null) return error("Некорректный путь запроса");
   const method = req.method;
 
   if (method === "GET" && pathname === "/api/health") {
     return json({ ok: true });
+  }
+
+  if (method === "GET" && pathname === "/api/session") {
+    return json({ authenticated: await hasSession(req) });
+  }
+
+  if (method === "POST" && pathname === "/api/login") {
+    const limit = rateLimit(`login:${clientIp(req)}`, 10, 15 * 60_000);
+    if (!limit.allowed) {
+      return json({ error: "Слишком много попыток входа. Подождите немного" }, 429, {
+        "retry-after": String(limit.retryAfter),
+      });
+    }
+    const body = await parseBody<{ password?: unknown }>(req);
+    if (!(await checkPassword(body.password))) return error("Неверный пароль", 401);
+    return json({ ok: true }, 200, { "set-cookie": sessionCookie(req, await createSessionToken()) });
+  }
+
+  if (method === "POST" && pathname === "/api/logout") {
+    return json({ ok: true }, 200, { "set-cookie": clearCookie(req) });
+  }
+
+  if (!publicPaths.has(pathname) && !(await hasSession(req))) {
+    return error("Требуется вход в систему", 401);
   }
 
   if (method === "GET" && pathname === "/api/products") {
@@ -76,7 +140,12 @@ export async function handle(req: Request): Promise<Response> {
   }
 
   if (method === "GET" && pathname.startsWith("/api/products/barcode/")) {
-    const sku = decodeURIComponent(pathname.slice("/api/products/barcode/".length));
+    let sku: string;
+    try {
+      sku = decodeURIComponent(pathname.slice("/api/products/barcode/".length));
+    } catch {
+      return error("Некорректный штрихкод");
+    }
     const product = (await db
       .query("SELECT * FROM products WHERE sku = ?")
       .get(sku)) as Product | null;
@@ -89,7 +158,13 @@ export async function handle(req: Request): Promise<Response> {
     const product = (await db.query("SELECT * FROM products WHERE id = ?").get(id)) as Product | null;
     if (!product) return error("Товар не найден", 404);
     return new Response(barcodeSvg(product.sku), {
-      headers: { "content-type": "image/svg+xml", "cache-control": "no-store" },
+      headers: {
+        ...baseHeaders,
+        "content-type": "image/svg+xml",
+        "cache-control": "no-store",
+        // Картинку могут открыть отдельной вкладкой — SVG там не должен ничего исполнять.
+        "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      },
     });
   }
 
@@ -103,31 +178,43 @@ export async function handle(req: Request): Promise<Response> {
       size?: string;
       color?: string;
     }>(req);
-    const name = body.name?.trim();
-    const price = Number(body.price);
+    const name = trimmed(body.name);
+    const price = parseMinor(body.price);
     const stock = Number(body.stock ?? 0);
-    const category = body.category?.trim() || "Без категории";
-    const size = body.size?.trim() || "";
-    const color = body.color?.trim() || "";
+    const category = trimmed(body.category) || "Без категории";
+    const size = trimmed(body.size, 50) || "";
+    const color = trimmed(body.color, 50) || "";
     if (!name) return error("Укажите название товара");
-    if (!Number.isFinite(price) || price < 0) return error("Укажите корректную цену");
-    if (!Number.isInteger(stock) || stock < 0) return error("Укажите корректное количество");
+    if (price === null) return error("Укажите корректную цену");
+    if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) {
+      return error("Укажите корректное количество");
+    }
+
+    const generated = !trimmed(body.sku, 64);
     let sku: string;
     try {
-      sku = normalizeBarcode(body.sku) ?? await newBarcode();
+      sku = generated ? await newBarcode() : normalizeBarcode(body.sku)!;
     } catch (e) {
       return error(e instanceof Error ? e.message : "Некорректный штрихкод");
     }
-    try {
-      const result = (await db
-        .query(
-          "INSERT INTO products (sku, name, price, stock, category, size, color) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *",
-        )
-        .get(sku, name, price, stock, category, size, color)) as Product;
-      return json(result, 201);
-    } catch {
-      return error("Такой штрихкод уже существует");
+
+    // Между проверкой уникальности и вставкой возможна гонка, поэтому для
+    // сгенерированного номера просто пробуем ещё раз.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const result = (await db
+          .query(
+            "INSERT INTO products (sku, name, price, stock, category, size, color) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *",
+          )
+          .get(sku, name, price, stock, category, size, color)) as Product;
+        return json(result, 201);
+      } catch (e) {
+        if (!isUniqueViolation(e)) throw e;
+        if (!generated) return error("Такой штрихкод уже существует");
+        sku = await newBarcode();
+      }
     }
+    return error("Не удалось подобрать свободный штрихкод", 500);
   }
 
   if (method === "PATCH" && pathname.match(/^\/api\/products\/\d+$/)) {
@@ -143,12 +230,12 @@ export async function handle(req: Request): Promise<Response> {
       size?: string;
       color?: string;
     }>(req);
-    const name = body.name?.trim() ?? existing.name;
-    const price = body.price !== undefined ? Number(body.price) : existing.price;
+    const name = trimmed(body.name) ?? existing.name;
+    const price = body.price !== undefined ? parseMinor(body.price) : existing.price;
     const stock = body.stock !== undefined ? Number(body.stock) : existing.stock;
-    const category = body.category?.trim() ?? existing.category;
-    const size = body.size?.trim() ?? existing.size;
-    const color = body.color?.trim() ?? existing.color;
+    const category = trimmed(body.category) ?? existing.category;
+    const size = trimmed(body.size, 50) ?? existing.size;
+    const color = trimmed(body.color, 50) ?? existing.color;
     let sku: string;
     try {
       sku = body.sku === undefined ? existing.sku : (normalizeBarcode(body.sku) ?? existing.sku);
@@ -156,8 +243,10 @@ export async function handle(req: Request): Promise<Response> {
       return error(e instanceof Error ? e.message : "Некорректный штрихкод");
     }
     if (!name) return error("Укажите название товара");
-    if (!Number.isFinite(price) || price < 0) return error("Укажите корректную цену");
-    if (!Number.isInteger(stock) || stock < 0) return error("Укажите корректное количество");
+    if (price === null) return error("Укажите корректную цену");
+    if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) {
+      return error("Укажите корректное количество");
+    }
     try {
       const result = (await db
         .query(
@@ -165,7 +254,8 @@ export async function handle(req: Request): Promise<Response> {
         )
         .get(sku, name, price, stock, category, size, color, id)) as Product;
       return json(result);
-    } catch {
+    } catch (e) {
+      if (!isUniqueViolation(e)) throw e;
       return error("Такой штрихкод уже существует");
     }
   }
@@ -200,8 +290,8 @@ export async function handle(req: Request): Promise<Response> {
 
   if (method === "POST" && pathname === "/api/clients") {
     const body = await parseBody<{ name?: string; number?: string }>(req);
-    const name = body.name?.trim();
-    const number = body.number?.trim();
+    const name = trimmed(body.name);
+    const number = trimmed(body.number, 40);
     if (!name) return error("Укажите имя клиента");
     if (!number) return error("Укажите номер клиента");
     try {
@@ -209,7 +299,8 @@ export async function handle(req: Request): Promise<Response> {
         .query("INSERT INTO clients (name, number) VALUES (?, ?) RETURNING *")
         .get(name, number)) as Client;
       return json({ ...client, balance: 0, ledger_count: 0, last_activity: null }, 201);
-    } catch {
+    } catch (e) {
+      if (!isUniqueViolation(e)) throw e;
       return error("Клиент с таким номером уже существует");
     }
   }
@@ -239,8 +330,8 @@ export async function handle(req: Request): Promise<Response> {
     const existing = (await db.query("SELECT * FROM clients WHERE id = ?").get(id)) as Client | null;
     if (!existing) return error("Клиент не найден", 404);
     const body = await parseBody<{ name?: string; number?: string }>(req);
-    const name = body.name?.trim() ?? existing.name;
-    const number = body.number?.trim() ?? existing.number;
+    const name = trimmed(body.name) ?? existing.name;
+    const number = trimmed(body.number, 40) ?? existing.number;
     if (!name) return error("Укажите имя клиента");
     if (!number) return error("Укажите номер клиента");
     try {
@@ -248,7 +339,8 @@ export async function handle(req: Request): Promise<Response> {
         .query("UPDATE clients SET name = ?, number = ? WHERE id = ? RETURNING *")
         .get(name, number, id)) as Client;
       return json(client);
-    } catch {
+    } catch (e) {
+      if (!isUniqueViolation(e)) throw e;
       return error("Клиент с таким номером уже существует");
     }
   }
@@ -269,9 +361,9 @@ export async function handle(req: Request): Promise<Response> {
     const client = (await db.query("SELECT * FROM clients WHERE id = ?").get(id)) as Client | null;
     if (!client) return error("Клиент не найден", 404);
     const body = await parseBody<{ amount?: number; note?: string }>(req);
-    const amount = Number(body.amount);
-    const note = body.note?.trim() || "";
-    if (!Number.isFinite(amount) || amount <= 0) return error("Укажите сумму больше нуля");
+    const amount = parseMinor(body.amount);
+    const note = trimmed(body.note) || "";
+    if (amount === null || amount <= 0) return error("Укажите сумму больше нуля");
 
     try {
       const entry = await withTransaction(async (tx) => {
@@ -282,7 +374,8 @@ export async function handle(req: Request): Promise<Response> {
              FROM client_ledger WHERE client_id = ?`,
           )
           .get(id)) as { balance: number };
-        if (amount > row.balance + 0.000001) {
+        // Суммы целые, поэтому сравнение точное — допуск больше не нужен.
+        if (amount > row.balance) {
           throw new Error("Сумма погашения больше текущего долга");
         }
       }
@@ -301,12 +394,13 @@ export async function handle(req: Request): Promise<Response> {
   if (method === "POST" && pathname === "/api/sales") {
     const body = await parseBody<{ items?: { product_id: number; qty: number }[] }>(req);
     const requestedItems = body.items ?? [];
-    if (!requestedItems.length) return error("Корзина пуста");
+    if (!Array.isArray(requestedItems) || !requestedItems.length) return error("Корзина пуста");
+    if (requestedItems.length > 500) return error("Слишком много позиций в продаже");
 
     const combined = new Map<number, number>();
     for (const item of requestedItems) {
-      const productId = Number(item.product_id);
-      const qty = Number(item.qty);
+      const productId = Number(item?.product_id);
+      const qty = Number(item?.qty);
       if (!Number.isInteger(productId) || !Number.isInteger(qty) || qty < 1) {
         return error("Некорректная позиция в продаже");
       }
@@ -418,20 +512,24 @@ export async function handle(req: Request): Promise<Response> {
 }
 
 export async function fetchApi(req: Request): Promise<Response> {
+  // Фронтенд и API живут на одном origin (в разработке — через прокси Vite),
+  // поэтому CORS не нужен: браузер не должен пускать сюда чужие сайты.
   if (req.method === "OPTIONS") {
-    return new Response(null, {
-      headers: {
-        "access-control-allow-origin": "*",
-        "access-control-allow-methods": "GET,POST,PATCH,DELETE,OPTIONS",
-        "access-control-allow-headers": "content-type",
-      },
+    return new Response(null, { status: 204, headers: { ...baseHeaders, allow: "GET,POST,PATCH,DELETE" } });
+  }
+
+  const limit = rateLimit(`api:${clientIp(req)}`, 300, 60_000);
+  if (!limit.allowed) {
+    return json({ error: "Слишком много запросов. Попробуйте позже" }, 429, {
+      "retry-after": String(limit.retryAfter),
     });
   }
+
   try {
-    const res = await handle(req);
-    res.headers.set("access-control-allow-origin", "*");
-    return res;
+    return await handle(req);
   } catch (e) {
+    if (e instanceof BodyTooLarge) return error("Запрос слишком большой", 413);
+    if (e instanceof BadJson) return error("Некорректный JSON в запросе");
     console.error(e);
     return error("Ошибка сервера", 500);
   }
