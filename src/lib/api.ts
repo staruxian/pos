@@ -71,7 +71,8 @@ async function parse<T>(res: Response): Promise<T> {
 }
 
 export const api = {
-  session: () => fetch("/api/session").then((r) => parse<{ authenticated: boolean }>(r)),
+  session: () =>
+    fetch("/api/session").then((r) => parse<{ authenticated: boolean; authRequired: boolean }>(r)),
   /** Не использует parse(): 401 здесь означает «неверный пароль», а не потерю сессии. */
   login: async (password: string) => {
     const res = await fetch("/api/login", {

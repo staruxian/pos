@@ -22,6 +22,8 @@ export function App() {
   const [reportKey, setReportKey] = useState(0);
   // null — сессию ещё проверяем и рисовать нечего.
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
+  // Вход по паролю включается на сервере наличием POS_PASSWORD.
+  const [authRequired, setAuthRequired] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -36,7 +38,10 @@ export function App() {
 
   useEffect(() => {
     api.session()
-      .then((s) => setAuthenticated(s.authenticated))
+      .then((s) => {
+        setAuthRequired(s.authRequired);
+        setAuthenticated(s.authenticated);
+      })
       .catch(() => setAuthenticated(false));
   }, []);
 
@@ -102,6 +107,7 @@ export function App() {
               );
             })}
           </nav>
+          {authRequired && (
           <button
             type="button"
             onClick={() => void logout()}
@@ -111,6 +117,7 @@ export function App() {
           >
             <LogOut className="size-4" />
           </button>
+          )}
         </div>
       </header>
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-10">

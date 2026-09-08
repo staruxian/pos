@@ -2,6 +2,7 @@ import { db, withTransaction, type Client, type ClientLedgerEntry, type Product 
 import bwipjs from "bwip-js/node";
 import {
   authConfigError,
+  authEnabled,
   checkPassword,
   clearCookie,
   createSessionToken,
@@ -105,31 +106,23 @@ export async function handle(req: Request): Promise<Response> {
   if (pathname === null) return error("Некорректный путь запроса");
   const method = req.method;
 
-  // Health отвечает всегда — по нему видно, из-за чего касса не поднимается.
+  // Health отвечает всегда — по нему видно, включён ли вход и что настроено не так.
   const configError = authConfigError();
+  const authOn = authEnabled();
   if (method === "GET" && pathname === "/api/health") {
-    if (!configError) return json({ ok: true });
-    // Временная диагностика: только ИМЕНА переменных, которые видит функция.
-    // Значения не отдаём никогда. Убрать, когда касса поднимется.
-    return json(
-      {
-        ok: false,
-        error: configError,
-        visibleNames: Object.keys(process.env).filter((k) => /^(POS_|SESSION_|TURSO_)/.test(k)).sort(),
-        envCount: Object.keys(process.env).length,
-      },
-      503,
-    );
+    if (configError) return json({ ok: false, error: configError }, 503);
+    return json({ ok: true, auth: authOn ? "enabled" : "disabled" });
   }
 
-  // Без настроек вход невозможен, поэтому закрыто всё остальное.
+  // Настройка наполовину — закрываем всё: непонятно, хотели включить вход или нет.
   if (configError) return error(`Сервер не настроен: ${configError}`, 503);
 
   if (method === "GET" && pathname === "/api/session") {
-    return json({ authenticated: await hasSession(req) });
+    return json({ authenticated: authOn ? await hasSession(req) : true, authRequired: authOn });
   }
 
   if (method === "POST" && pathname === "/api/login") {
+    if (!authOn) return error("Вход отключён: POS_PASSWORD не задан");
     const limit = rateLimit(`login:${clientIp(req)}`, 10, 15 * 60_000);
     if (!limit.allowed) {
       return json({ error: "Слишком много попыток входа. Подождите немного" }, 429, {
@@ -145,7 +138,7 @@ export async function handle(req: Request): Promise<Response> {
     return json({ ok: true }, 200, { "set-cookie": clearCookie(req) });
   }
 
-  if (!publicPaths.has(pathname) && !(await hasSession(req))) {
+  if (authOn && !publicPaths.has(pathname) && !(await hasSession(req))) {
     return error("Требуется вход в систему", 401);
   }
 
