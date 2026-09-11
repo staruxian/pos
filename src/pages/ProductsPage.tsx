@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Barcode, Boxes, Layers, Pencil, Plus, Search, Shirt, TrendingUp, Trash2, Wallet } from "lucide-react";
 import { api, type Product } from "@/lib/api";
 import { printLabel } from "@/lib/printer";
@@ -49,6 +49,12 @@ export function ProductsPage({
   const [removing, setRemoving] = useState<Product | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  // Прибыль считается по проданному, а не по остаткам, поэтому берётся с сервера.
+  const [profit, setProfit] = useState<number | null>(null);
+
+  useEffect(() => {
+    api.balance().then((balance) => setProfit(balance.profit)).catch(() => setProfit(null));
+  }, []);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -67,9 +73,8 @@ export function ProductsPage({
         (acc, p) => ({
           units: acc.units + p.stock,
           cost: acc.cost + p.cost_price * p.stock,
-          margin: acc.margin + (p.price - p.cost_price) * p.stock,
         }),
-        { units: 0, cost: 0, margin: 0 },
+        { units: 0, cost: 0 },
       ),
     [products],
   );
@@ -192,11 +197,11 @@ export function ProductsPage({
         <StatCard label="Единиц на складе" value={summary.units} icon={Boxes} />
         <StatCard label="Вложено в закупку" value={money(summary.cost)} icon={Wallet} />
         <StatCard
-          label="Маржа в остатках"
-          value={money(summary.margin)}
-          hint="Если продать всё по прайсу"
+          label="Чистая прибыль"
+          value={profit === null ? "—" : money(profit)}
+          hint="Проданное минус закупка и расходы"
           icon={TrendingUp}
-          tone={summary.margin < 0 ? "debt" : "profit"}
+          tone={profit !== null && profit < 0 ? "debt" : "profit"}
         />
       </div>
 

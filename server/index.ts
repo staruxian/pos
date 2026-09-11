@@ -582,41 +582,68 @@ export async function handle(req: Request): Promise<Response> {
     return json({ ok: true });
   }
 
-  // Баланс кассы: приход — суммы продаж, расход — записанные траты.
-  // Значение нигде не хранится, оно всегда считается заново.
+  // Деньги магазина. Ничего не хранится — всё считается заново при каждом запросе.
+  //
+  // Расход и изъятие по-разному влияют на деньги: и то и другое уменьшает кассу,
+  // но прибыль уменьшает только расход. Изъятие — это уже заработанные деньги,
+  // которые вынули из кассы, а не затрата магазина.
   if (method === "GET" && pathname === "/api/balance") {
     const income = (await db
       .query("SELECT COALESCE(SUM(total), 0) AS value FROM sales")
       .get()) as { value: number };
-    const spent = (await db
-      .query("SELECT COALESCE(SUM(amount), 0) AS value FROM expenses")
+    const outflow = (await db
+      .query(
+        `SELECT
+           COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount END), 0) AS spent,
+           COALESCE(SUM(CASE WHEN kind = 'withdrawal' THEN amount END), 0) AS withdrawn
+         FROM expenses`,
+      )
+      .get()) as { spent: number; withdrawn: number };
+    // Реализованная маржа: только то, что уже продано, по ценам и закупке той продажи.
+    const margin = (await db
+      .query("SELECT COALESCE(SUM(qty * (unit_price - cost_price)), 0) AS value FROM sale_items")
       .get()) as { value: number };
-    // Приход и расход показываются двумя отдельными списками, поэтому и отдаём их порознь.
+
+    // Каждый вид операций показывается своим списком, поэтому и отдаём их порознь.
     const sales = await db
       .query("SELECT id, total, created_at FROM sales ORDER BY id DESC LIMIT 50")
       .all();
     const expenses = await db
-      .query("SELECT id, amount, note, created_at FROM expenses ORDER BY id DESC LIMIT 50")
+      .query(
+        "SELECT id, amount, note, kind, created_at FROM expenses WHERE kind = 'expense' ORDER BY id DESC LIMIT 50",
+      )
       .all();
+    const withdrawals = await db
+      .query(
+        "SELECT id, amount, note, kind, created_at FROM expenses WHERE kind = 'withdrawal' ORDER BY id DESC LIMIT 50",
+      )
+      .all();
+
     return json({
-      balance: income.value - spent.value,
+      balance: income.value - outflow.spent - outflow.withdrawn,
       income: income.value,
-      spent: spent.value,
+      spent: outflow.spent,
+      withdrawn: outflow.withdrawn,
+      margin: margin.value,
+      profit: margin.value - outflow.spent,
       sales,
       expenses,
+      withdrawals,
     });
   }
 
   if (method === "POST" && pathname === "/api/expenses") {
-    const body = await parseBody<{ amount?: number; note?: string }>(req);
+    const body = await parseBody<{ amount?: number; note?: string; kind?: string }>(req);
     const amount = parseMinor(body.amount);
     const note = trimmed(body.note);
+    const kind = body.kind === "withdrawal" ? "withdrawal" : "expense";
     if (amount === null || amount <= 0) return error("Укажите сумму больше нуля");
-    // Комментарий обязателен: расход без пояснения нельзя разобрать потом.
-    if (!note) return error("Напишите, на что потрачены деньги");
+    // У расхода комментарий обязателен: трату без пояснения нельзя разобрать потом.
+    // У изъятия он нужен не всегда — деньги просто вынули из кассы.
+    if (kind === "expense" && !note) return error("Напишите, на что потрачены деньги");
     const expense = (await db
-      .query("INSERT INTO expenses (amount, note) VALUES (?, ?) RETURNING *")
-      .get(amount, note)) as Expense;
+      .query("INSERT INTO expenses (amount, note, kind) VALUES (?, ?, ?) RETURNING *")
+      .get(amount, note ?? "", kind)) as Expense;
     return json(expense, 201);
   }
 
