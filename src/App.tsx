@@ -165,8 +165,9 @@ export function ProductsRoute() {
 }
 
 export function ReportsRoute() {
-  const { reportKey } = useAppOutlet();
-  return <ReportsPage key={reportKey} />;
+  const { reportKey, refreshProducts } = useAppOutlet();
+  // Отмена продажи возвращает товар на склад, поэтому обновляем и список товаров.
+  return <ReportsPage key={reportKey} onChange={() => void refreshProducts()} />;
 }
 
 export function ClientsRoute() {

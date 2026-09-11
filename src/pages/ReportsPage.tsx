@@ -1,13 +1,20 @@
 import { useEffect, useState } from "react";
-import { Banknote, Boxes, ReceiptText, TrendingUp } from "lucide-react";
-import { api, type Report } from "@/lib/api";
-import { cn, money } from "@/lib/utils";
+import { Banknote, Boxes, Pencil, ReceiptText, Trash2, TrendingUp } from "lucide-react";
+import { api, type Report, type SaleDetails } from "@/lib/api";
+import { cn, fromMinor, money, toMinor } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -44,12 +51,17 @@ const presets = [
   { label: "30 дней", days: 29 },
 ];
 
-export function ReportsPage() {
+/** onChange зовём после правки и отмены продажи: меняются и остатки, и отчёт. */
+export function ReportsPage({ onChange }: { onChange?: () => void }) {
   const today = isoDate(new Date());
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
   const [data, setData] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<SaleDetails | null>(null);
+  const [prices, setPrices] = useState<Record<number, string>>({});
+  const [saleError, setSaleError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   async function load(nextFrom = from, nextTo = to) {
     setError(null);
@@ -64,6 +76,51 @@ export function ReportsPage() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function openSale(id: number) {
+    setSaleError(null);
+    try {
+      const sale = await api.sale(id);
+      setEditing(sale);
+      setPrices(Object.fromEntries(sale.items.map((item) => [item.id, fromMinor(item.unit_price)])));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Не удалось открыть продажу");
+    }
+  }
+
+  async function saveSale(event: React.FormEvent) {
+    event.preventDefault();
+    if (!editing) return;
+    const items: { id: number; unit_price: number }[] = [];
+    for (const item of editing.items) {
+      const unitPrice = toMinor(prices[item.id] ?? "");
+      if (unitPrice === null) return setSaleError(`Укажите корректную цену для «${item.product_name}»`);
+      items.push({ id: item.id, unit_price: unitPrice });
+    }
+    setBusy(true);
+    setSaleError(null);
+    try {
+      await api.updateSale(editing.id, items);
+      setEditing(null);
+      await load();
+      onChange?.();
+    } catch (err) {
+      setSaleError(err instanceof Error ? err.message : "Не удалось сохранить продажу");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeSale(id: number) {
+    if (!confirm(`Отменить продажу №${id}? Товары вернутся на склад.`)) return;
+    try {
+      await api.deleteSale(id);
+      await load();
+      onChange?.();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Не удалось отменить продажу");
+    }
+  }
 
   function applyPreset(days: number) {
     const start = daysAgo(days);
@@ -186,7 +243,8 @@ export function ReportsPage() {
                     <TableRow className="hover:bg-transparent">
                       <TableHead className="pl-5">№</TableHead>
                       <TableHead>Время</TableHead>
-                      <TableHead className="pr-5 text-right">Сумма</TableHead>
+                      <TableHead className="text-right">Сумма</TableHead>
+                      <TableHead className="pr-5" />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -194,12 +252,32 @@ export function ReportsPage() {
                       <TableRow key={s.id}>
                         <TableCell className="pl-5 tabular-nums text-muted-foreground">{s.id}</TableCell>
                         <TableCell className="tabular-nums">{s.created_at.replace("T", " ").slice(0, 16)}</TableCell>
-                        <TableCell className="pr-5 text-right font-medium tabular-nums">{money(s.total)}</TableCell>
+                        <TableCell className="text-right font-medium tabular-nums">{money(s.total)}</TableCell>
+                        <TableCell className="pr-5 text-right whitespace-nowrap">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            title="Изменить цену продажи"
+                            aria-label={`Изменить цену продажи №${s.id}`}
+                            onClick={() => void openSale(s.id)}
+                          >
+                            <Pencil />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            title="Отменить продажу"
+                            aria-label={`Отменить продажу №${s.id}`}
+                            onClick={() => void removeSale(s.id)}
+                          >
+                            <Trash2 />
+                          </Button>
+                        </TableCell>
                       </TableRow>
                     ))}
                     {!data.recent.length && (
                       <TableRow className="hover:bg-transparent">
-                        <TableCell colSpan={3} className="py-12 text-center text-muted-foreground">
+                        <TableCell colSpan={4} className="py-12 text-center text-muted-foreground">
                           Продаж пока нет.
                         </TableCell>
                       </TableRow>
@@ -228,6 +306,67 @@ export function ReportsPage() {
           </div>
         </>
       )}
+
+      <Dialog open={!!editing} onOpenChange={(open) => { if (!open) setEditing(null); }}>
+        <DialogContent>
+          {editing && (
+            <form onSubmit={saveSale} className="grid gap-4">
+              <DialogHeader>
+                <DialogTitle>Продажа №{editing.id}</DialogTitle>
+                <DialogDescription>
+                  {editing.created_at.replace("T", " ").slice(0, 16)} · меняется только цена продажи,
+                  состав и количество остаются прежними.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="grid gap-2">
+                {editing.items.map((item) => (
+                  <div key={item.id} className="flex items-center gap-3 rounded-2xl border p-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">{item.product_name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {item.qty} шт. · закупка {money(item.cost_price)}
+                      </p>
+                    </div>
+                    <Input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      className="w-32 text-right tabular-nums"
+                      aria-label={`Цена продажи товара ${item.product_name}`}
+                      value={prices[item.id] ?? ""}
+                      onChange={(e) => setPrices({ ...prices, [item.id]: e.target.value })}
+                      onFocus={(e) => e.target.select()}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center justify-between rounded-xl bg-muted/65 px-3 py-2 text-sm">
+                <span className="text-muted-foreground">Новый итог</span>
+                <span className="font-semibold tabular-nums">
+                  {money(
+                    editing.items.reduce(
+                      (sum, item) => sum + item.qty * (toMinor(prices[item.id] ?? "") ?? 0),
+                      0,
+                    ),
+                  )}
+                </span>
+              </div>
+
+              {saleError && <p className="text-sm text-destructive">{saleError}</p>}
+              <div className="flex gap-2">
+                <Button type="button" variant="outline" className="flex-1" onClick={() => setEditing(null)}>
+                  Отмена
+                </Button>
+                <Button type="submit" className="flex-1" disabled={busy}>
+                  {busy ? "Сохраняем…" : "Сохранить"}
+                </Button>
+              </div>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

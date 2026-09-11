@@ -29,6 +29,25 @@ export type Report = {
   lowStock: Product[];
 };
 
+export type SaleItem = {
+  id: number;
+  product_id: number;
+  product_name: string;
+  sku: string;
+  qty: number;
+  /** Фактическая цена продажи в тийинах (1/100 сума). */
+  unit_price: number;
+  /** Закупочная цена на момент продажи. */
+  cost_price: number;
+};
+
+export type SaleDetails = {
+  id: number;
+  created_at: string;
+  total: number;
+  items: SaleItem[];
+};
+
 export type Client = {
   id: number;
   name: string;
@@ -118,6 +137,16 @@ export const api = {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ items }),
     }).then((r) => parse<{ id: number; total: number }>(r)),
+  sale: (id: number) => fetch(`/api/sales/${id}`).then((r) => parse<SaleDetails>(r)),
+  /** Меняется только цена продажи позиций — состав и количество неизменны. */
+  updateSale: (id: number, items: { id: number; unit_price: number }[]) =>
+    fetch(`/api/sales/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ items }),
+    }).then((r) => parse<{ id: number; total: number }>(r)),
+  deleteSale: (id: number) =>
+    fetch(`/api/sales/${id}`, { method: "DELETE" }).then((r) => parse<{ ok: boolean }>(r)),
   clients: () => fetch("/api/clients").then((r) => parse<Client[]>(r)),
   client: (id: number) => fetch(`/api/clients/${id}`).then((r) => parse<ClientDetails>(r)),
   createClient: (body: { name: string; number: string }) =>
