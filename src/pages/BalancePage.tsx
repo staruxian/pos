@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowDownLeft, ArrowUpRight, Banknote, HandCoins, Minus, Trash2, Wallet } from "lucide-react";
-import { api, type Balance, type Expense } from "@/lib/api";
-import { money, toMinor } from "@/lib/utils";
+import {
+  ArrowDownLeft,
+  ArrowUpRight,
+  Banknote,
+  CreditCard,
+  HandCoins,
+  Minus,
+  Trash2,
+  Wallet,
+} from "lucide-react";
+import { api, type Account, type Balance, type Expense } from "@/lib/api";
+import { cn, money, toMinor } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,6 +27,8 @@ import {
 } from "@/components/ui/dialog";
 
 type Kind = "expense" | "withdrawal";
+
+const accountLabel: Record<Account, string> = { cash: "Наличные", card: "Карта" };
 
 function operationTime(value: string) {
   return new Date(value.replace(" ", "T")).toLocaleString("ru-RU", {
@@ -66,7 +78,9 @@ function OutflowCard({
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate font-medium">{item.note || fallbackNote}</p>
-                <p className="truncate text-xs text-muted-foreground">{operationTime(item.created_at)}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {accountLabel[item.account]} · {operationTime(item.created_at)}
+                </p>
               </div>
               <p className="font-semibold tabular-nums text-destructive">−{money(item.amount)}</p>
               <Button
@@ -91,6 +105,7 @@ export function BalancePage() {
   const [error, setError] = useState<string | null>(null);
 
   const [dialog, setDialog] = useState<Kind | null>(null);
+  const [account, setAccount] = useState<Account>("cash");
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
@@ -114,6 +129,7 @@ export function BalancePage() {
   }, [load]);
 
   function startDialog(kind: Kind) {
+    setAccount("cash");
     setAmount("");
     setNote("");
     setFormError(null);
@@ -131,7 +147,7 @@ export function BalancePage() {
     setBusy(true);
     setFormError(null);
     try {
-      await api.createExpense({ amount: value, note: note.trim(), kind: dialog });
+      await api.createExpense({ amount: value, note: note.trim(), kind: dialog, account });
       setDialog(null);
       await load();
     } catch (err) {
@@ -169,7 +185,7 @@ export function BalancePage() {
       <PageHeader
         eyebrow="Касса магазина"
         title="Баланс"
-        description="Продажи пополняют кассу, расходы и изъятия её уменьшают."
+        description="Наличные и карта считаются отдельно. Долг деньгами не приходит, пока клиент не заплатит."
       >
         <Button variant="outline" size="lg" onClick={() => startDialog("withdrawal")}>
           <HandCoins /> Забрать деньги
@@ -185,27 +201,33 @@ export function BalancePage() {
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <StatCard
-              label="Баланс кассы"
-              value={money(data.balance)}
-              hint="Продажи минус расходы и изъятия"
+              label="Наличные"
+              value={money(data.cash.balance)}
+              hint="Продажи за нал и оплаты долгов минус списания"
               icon={Wallet}
-              tone={data.balance < 0 ? "debt" : "default"}
+              tone={data.cash.balance < 0 ? "debt" : "default"}
             />
-            <StatCard label="Приход с продаж" value={money(data.income)} icon={Banknote} tone="profit" />
+            <StatCard
+              label="На карте"
+              value={money(data.card.balance)}
+              hint="Онлайн-оплаты минус списания с карты"
+              icon={CreditCard}
+              tone={data.card.balance < 0 ? "debt" : "default"}
+            />
             <StatCard label="Расходы" value={money(data.spent)} icon={ArrowUpRight} tone="debt" />
             <StatCard
-              label="Забрали из кассы"
-              value={money(data.withdrawn)}
-              hint="На прибыль не влияет"
+              label="В долгах у клиентов"
+              value={money(data.debt)}
+              hint="Отдано в долг, деньги ещё не пришли"
               icon={HandCoins}
-              tone="debt"
+              tone={data.debt > 0 ? "debt" : "default"}
             />
           </div>
 
           <div className="grid gap-6 lg:grid-cols-3">
             <div className="h-fit overflow-hidden rounded-[var(--radius)] border bg-card shadow-sm">
               <div className="flex items-center justify-between border-b px-5 py-4">
-                <span className="font-semibold">Приход с продаж</span>
+                <span className="font-semibold">Продажи</span>
                 <span className="text-xs text-muted-foreground">Последние 50</span>
               </div>
               {!data.sales.length ? (
@@ -220,16 +242,47 @@ export function BalancePage() {
                 <div className="divide-y">
                   {data.sales.map((sale) => (
                     <div key={sale.id} className="flex items-center gap-3 px-5 py-3.5">
-                      <div className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-500/10 text-emerald-600">
-                        <ArrowDownLeft className="size-4" />
+                      <div
+                        className={cn(
+                          "grid size-9 shrink-0 place-items-center rounded-full",
+                          sale.payment_method === "debt"
+                            ? "bg-muted text-muted-foreground"
+                            : "bg-emerald-500/10 text-emerald-600",
+                        )}
+                      >
+                        {sale.payment_method === "card" ? (
+                          <CreditCard className="size-4" />
+                        ) : sale.payment_method === "debt" ? (
+                          <HandCoins className="size-4" />
+                        ) : (
+                          <ArrowDownLeft className="size-4" />
+                        )}
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="font-medium">Продажа №{sale.id}</p>
+                        <p className="flex items-center gap-2 font-medium">
+                          Продажа №{sale.id}
+                          {sale.payment_method === "debt" && (
+                            <Badge variant="secondary" className="rounded-full">в долг</Badge>
+                          )}
+                        </p>
                         <p className="truncate text-xs text-muted-foreground">
-                          {operationTime(sale.created_at)}
+                          {sale.payment_method === "card"
+                            ? "Карта"
+                            : sale.payment_method === "debt"
+                              ? "Деньги ещё не пришли"
+                              : "Наличные"}{" "}
+                          · {operationTime(sale.created_at)}
                         </p>
                       </div>
-                      <p className="font-semibold tabular-nums text-emerald-600">+{money(sale.total)}</p>
+                      <p
+                        className={cn(
+                          "font-semibold tabular-nums",
+                          sale.payment_method === "debt" ? "text-muted-foreground" : "text-emerald-600",
+                        )}
+                      >
+                        {sale.payment_method === "debt" ? "" : "+"}
+                        {money(sale.total)}
+                      </p>
                     </div>
                   ))}
                 </div>
@@ -268,6 +321,28 @@ export function BalancePage() {
                   : "Деньги вынули из кассы. Баланс уменьшится, прибыль останется прежней: это уже заработанные деньги, а не затрата магазина."}
               </DialogDescription>
             </DialogHeader>
+            <div className="grid gap-1.5">
+              <Label>Откуда списать</Label>
+              <div className="grid grid-cols-2 gap-2">
+                {(["cash", "card"] as const).map((value) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setAccount(value)}
+                    className={cn(
+                      "flex items-center justify-center gap-2 rounded-xl border p-2.5 text-sm font-semibold transition",
+                      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      account === value
+                        ? "border-primary bg-primary/5 text-foreground shadow-xs"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {value === "cash" ? <Banknote className="size-4" /> : <CreditCard className="size-4" />}
+                    {accountLabel[value]}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="grid gap-1.5">
               <Label htmlFor="expense-amount">Сумма</Label>
               <Input

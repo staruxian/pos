@@ -5,6 +5,7 @@ import {
   type ClientLedgerEntry,
   type Expense,
   type Product,
+  type Sale,
 } from "./db";
 import bwipjs from "bwip-js/node";
 import {
@@ -28,8 +29,6 @@ import {
 } from "./security";
 
 const PORT = Number(process.env.PORT ?? 3001);
-
-type Sale = { id: number; created_at: string; total: number };
 
 // Заголовки, которые должны стоять на каждом ответе API.
 const baseHeaders = {
@@ -420,7 +419,22 @@ export async function handle(req: Request): Promise<Response> {
   if (method === "POST" && pathname === "/api/sales") {
     const body = await parseBody<{
       items?: { product_id: number; qty: number; unit_price?: number }[];
+      payment_method?: string;
+      client_id?: number;
     }>(req);
+    const paymentMethod =
+      body.payment_method === "card" || body.payment_method === "debt"
+        ? body.payment_method
+        : "cash";
+    // Долг всегда привязан к клиенту: иначе непонятно, с кого спрашивать деньги.
+    let clientId: number | null = null;
+    if (paymentMethod === "debt") {
+      clientId = Number(body.client_id);
+      if (!Number.isInteger(clientId)) return error("Выберите клиента для продажи в долг");
+      if (!(await db.query("SELECT 1 FROM clients WHERE id = ?").get(clientId))) {
+        return error("Клиент не найден", 404);
+      }
+    }
     const requestedItems = body.items ?? [];
     if (!Array.isArray(requestedItems) || !requestedItems.length) return error("Корзина пуста");
     if (requestedItems.length > 500) return error("Слишком много позиций в продаже");
@@ -476,8 +490,10 @@ export async function handle(req: Request): Promise<Response> {
         }
 
         const insertedSale = (await tx
-          .query("INSERT INTO sales (total) VALUES (?) RETURNING *")
-          .get(total)) as Sale;
+          .query(
+            "INSERT INTO sales (total, payment_method, client_id) VALUES (?, ?, ?) RETURNING *",
+          )
+          .get(total, paymentMethod, clientId)) as Sale;
 
         for (const line of lines) {
           await tx.query(
@@ -495,6 +511,15 @@ export async function handle(req: Request): Promise<Response> {
 
         for (const [productId, qty] of soldQty) {
           await tx.query("UPDATE products SET stock = stock - ? WHERE id = ?").run(qty, productId);
+        }
+
+        // Продажа в долг деньгами не оплачена — она становится долгом клиента.
+        if (paymentMethod === "debt") {
+          await tx
+            .query(
+              "INSERT INTO client_ledger (client_id, kind, amount, note, sale_id) VALUES (?, 'debt', ?, ?, ?)",
+            )
+            .run(clientId, total, `Продажа №${insertedSale.id}`, insertedSale.id);
         }
 
         return insertedSale;
@@ -552,6 +577,10 @@ export async function handle(req: Request): Promise<Response> {
       const recalculated = (await tx
         .query("SELECT COALESCE(SUM(qty * unit_price), 0) AS total FROM sale_items WHERE sale_id = ?")
         .get(id)) as { total: number };
+      // Долг по продаже в долг обязан совпадать с её суммой.
+      await tx
+        .query("UPDATE client_ledger SET amount = ? WHERE sale_id = ? AND kind = 'debt'")
+        .run(recalculated.total, id);
       return (await tx
         .query("UPDATE sales SET total = ? WHERE id = ? RETURNING *")
         .get(recalculated.total, id)) as Sale;
@@ -577,6 +606,8 @@ export async function handle(req: Request): Promise<Response> {
       // ON DELETE CASCADE работает только при включённых внешних ключах, поэтому
       // позиции удаляем явно.
       await tx.query("DELETE FROM sale_items WHERE sale_id = ?").run(id);
+      // Отменённая продажа в долг не должна оставлять долг за клиентом.
+      await tx.query("DELETE FROM client_ledger WHERE sale_id = ?").run(id);
       await tx.query("DELETE FROM sales WHERE id = ?").run(id);
     });
     return json({ ok: true });
@@ -584,21 +615,40 @@ export async function handle(req: Request): Promise<Response> {
 
   // Деньги магазина. Ничего не хранится — всё считается заново при каждом запросе.
   //
-  // Расход и изъятие по-разному влияют на деньги: и то и другое уменьшает кассу,
-  // но прибыль уменьшает только расход. Изъятие — это уже заработанные деньги,
-  // которые вынули из кассы, а не затрата магазина.
+  // Балансов два, наличные и карта: деньги физически лежат в разных местах, и
+  // расход с карты не уменьшает пачку купюр в ящике.
+  //
+  // Продажа в долг не пополняет ни один баланс: товар отдан, денег нет. Деньги
+  // приходят позже погашением долга (`client_ledger`, kind = payment) и попадают
+  // в наличные. Расход уменьшает и баланс, и прибыль; изъятие — только баланс.
   if (method === "GET" && pathname === "/api/balance") {
     const income = (await db
-      .query("SELECT COALESCE(SUM(total), 0) AS value FROM sales")
+      .query(
+        `SELECT
+           COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN total END), 0) AS cash,
+           COALESCE(SUM(CASE WHEN payment_method = 'card' THEN total END), 0) AS card,
+           COALESCE(SUM(CASE WHEN payment_method = 'debt' THEN total END), 0) AS debt
+         FROM sales`,
+      )
+      .get()) as { cash: number; card: number; debt: number };
+    const payments = (await db
+      .query("SELECT COALESCE(SUM(amount), 0) AS value FROM client_ledger WHERE kind = 'payment'")
       .get()) as { value: number };
     const outflow = (await db
       .query(
         `SELECT
-           COALESCE(SUM(CASE WHEN kind = 'expense' THEN amount END), 0) AS spent,
-           COALESCE(SUM(CASE WHEN kind = 'withdrawal' THEN amount END), 0) AS withdrawn
+           COALESCE(SUM(CASE WHEN kind = 'expense' AND account = 'cash' THEN amount END), 0) AS spent_cash,
+           COALESCE(SUM(CASE WHEN kind = 'expense' AND account = 'card' THEN amount END), 0) AS spent_card,
+           COALESCE(SUM(CASE WHEN kind = 'withdrawal' AND account = 'cash' THEN amount END), 0) AS taken_cash,
+           COALESCE(SUM(CASE WHEN kind = 'withdrawal' AND account = 'card' THEN amount END), 0) AS taken_card
          FROM expenses`,
       )
-      .get()) as { spent: number; withdrawn: number };
+      .get()) as {
+      spent_cash: number;
+      spent_card: number;
+      taken_cash: number;
+      taken_card: number;
+    };
     // Реализованная маржа: только то, что уже продано, по ценам и закупке той продажи.
     const margin = (await db
       .query("SELECT COALESCE(SUM(qty * (unit_price - cost_price)), 0) AS value FROM sale_items")
@@ -606,26 +656,46 @@ export async function handle(req: Request): Promise<Response> {
 
     // Каждый вид операций показывается своим списком, поэтому и отдаём их порознь.
     const sales = await db
-      .query("SELECT id, total, created_at FROM sales ORDER BY id DESC LIMIT 50")
+      .query(
+        "SELECT id, total, payment_method, client_id, created_at FROM sales ORDER BY id DESC LIMIT 50",
+      )
       .all();
     const expenses = await db
       .query(
-        "SELECT id, amount, note, kind, created_at FROM expenses WHERE kind = 'expense' ORDER BY id DESC LIMIT 50",
+        "SELECT id, amount, note, kind, account, created_at FROM expenses WHERE kind = 'expense' ORDER BY id DESC LIMIT 50",
       )
       .all();
     const withdrawals = await db
       .query(
-        "SELECT id, amount, note, kind, created_at FROM expenses WHERE kind = 'withdrawal' ORDER BY id DESC LIMIT 50",
+        "SELECT id, amount, note, kind, account, created_at FROM expenses WHERE kind = 'withdrawal' ORDER BY id DESC LIMIT 50",
       )
       .all();
 
+    const cashIn = income.cash + payments.value;
+    const cash = {
+      balance: cashIn - outflow.spent_cash - outflow.taken_cash,
+      income: income.cash,
+      payments: payments.value,
+      spent: outflow.spent_cash,
+      withdrawn: outflow.taken_cash,
+    };
+    const card = {
+      balance: income.card - outflow.spent_card - outflow.taken_card,
+      income: income.card,
+      spent: outflow.spent_card,
+      withdrawn: outflow.taken_card,
+    };
+    const spent = outflow.spent_cash + outflow.spent_card;
+
     return json({
-      balance: income.value - outflow.spent - outflow.withdrawn,
-      income: income.value,
-      spent: outflow.spent,
-      withdrawn: outflow.withdrawn,
+      cash,
+      card,
+      total: cash.balance + card.balance,
+      debt: income.debt,
+      spent,
+      withdrawn: outflow.taken_cash + outflow.taken_card,
       margin: margin.value,
-      profit: margin.value - outflow.spent,
+      profit: margin.value - spent,
       sales,
       expenses,
       withdrawals,
@@ -633,17 +703,23 @@ export async function handle(req: Request): Promise<Response> {
   }
 
   if (method === "POST" && pathname === "/api/expenses") {
-    const body = await parseBody<{ amount?: number; note?: string; kind?: string }>(req);
+    const body = await parseBody<{
+      amount?: number;
+      note?: string;
+      kind?: string;
+      account?: string;
+    }>(req);
     const amount = parseMinor(body.amount);
     const note = trimmed(body.note);
     const kind = body.kind === "withdrawal" ? "withdrawal" : "expense";
+    const account = body.account === "card" ? "card" : "cash";
     if (amount === null || amount <= 0) return error("Укажите сумму больше нуля");
     // У расхода комментарий обязателен: трату без пояснения нельзя разобрать потом.
     // У изъятия он нужен не всегда — деньги просто вынули из кассы.
     if (kind === "expense" && !note) return error("Напишите, на что потрачены деньги");
     const expense = (await db
-      .query("INSERT INTO expenses (amount, note, kind) VALUES (?, ?, ?) RETURNING *")
-      .get(amount, note ?? "", kind)) as Expense;
+      .query("INSERT INTO expenses (amount, note, kind, account) VALUES (?, ?, ?, ?) RETURNING *")
+      .get(amount, note ?? "", kind, account)) as Expense;
     return json(expense, 201);
   }
 
