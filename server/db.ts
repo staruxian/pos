@@ -23,6 +23,7 @@ const schema = [
     sku TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
     price INTEGER NOT NULL,
+    cost_price INTEGER NOT NULL DEFAULT 0,
     stock INTEGER NOT NULL DEFAULT 0,
     category TEXT NOT NULL DEFAULT 'Без категории',
     size TEXT NOT NULL DEFAULT '',
@@ -41,7 +42,8 @@ const schema = [
     product_name TEXT NOT NULL,
     sku TEXT NOT NULL,
     qty INTEGER NOT NULL,
-    unit_price INTEGER NOT NULL
+    unit_price INTEGER NOT NULL,
+    cost_price INTEGER NOT NULL DEFAULT 0
   )`,
   `CREATE TABLE IF NOT EXISTS clients (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,16 +70,17 @@ const schema = [
 async function initializeDatabase() {
   await client.migrate(schema.map((sql) => ({ sql, args: [] })));
 
-  const columns = await client.execute("PRAGMA table_info(products)");
-  const names = new Set(columns.rows.map((column) => String(column.name)));
-  const missingColumns = [
+  await addMissingColumns("products", [
     ["category", "ALTER TABLE products ADD COLUMN category TEXT NOT NULL DEFAULT 'Без категории'"],
     ["size", "ALTER TABLE products ADD COLUMN size TEXT NOT NULL DEFAULT ''"],
     ["color", "ALTER TABLE products ADD COLUMN color TEXT NOT NULL DEFAULT ''"],
-  ] as const;
-  for (const [name, sql] of missingColumns) {
-    if (!names.has(name)) await client.execute(sql);
-  }
+    ["cost_price", "ALTER TABLE products ADD COLUMN cost_price INTEGER NOT NULL DEFAULT 0"],
+  ]);
+  // Закупочная цена копируется в позицию продажи, чтобы прибыль за прошлый период
+  // не менялась задним числом при переоценке товара.
+  await addMissingColumns("sale_items", [
+    ["cost_price", "ALTER TABLE sale_items ADD COLUMN cost_price INTEGER NOT NULL DEFAULT 0"],
+  ]);
 
   await client.batch(
     [
@@ -93,6 +96,14 @@ async function initializeDatabase() {
   );
 
   await migrateMoneyToMinorUnits();
+}
+
+async function addMissingColumns(table: string, columns: readonly (readonly [string, string])[]) {
+  const info = await client.execute(`PRAGMA table_info(${table})`);
+  const names = new Set(info.rows.map((column) => String(column.name)));
+  for (const [name, sql] of columns) {
+    if (!names.has(name)) await client.execute(sql);
+  }
 }
 
 const MONEY_MIGRATION = "money-minor-units-v1";
@@ -195,8 +206,10 @@ export type Product = {
   id: number;
   sku: string;
   name: string;
-  /** Цена в тийинах (1/100 сума), целое число. */
+  /** Продажная цена в тийинах (1/100 сума), целое число. */
   price: number;
+  /** Закупочная цена в тийинах (1/100 сума), целое число. */
+  cost_price: number;
   stock: number;
   category: string;
   size: string;

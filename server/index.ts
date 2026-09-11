@@ -182,6 +182,7 @@ export async function handle(req: Request): Promise<Response> {
     const body = await parseBody<{
       name?: string;
       price?: number;
+      cost_price?: number;
       stock?: number;
       sku?: string;
       category?: string;
@@ -190,12 +191,14 @@ export async function handle(req: Request): Promise<Response> {
     }>(req);
     const name = trimmed(body.name);
     const price = parseMinor(body.price);
+    const costPrice = body.cost_price === undefined ? 0 : parseMinor(body.cost_price);
     const stock = Number(body.stock ?? 0);
     const category = trimmed(body.category) || "Без категории";
     const size = trimmed(body.size, 50) || "";
     const color = trimmed(body.color, 50) || "";
     if (!name) return error("Укажите название товара");
     if (price === null) return error("Укажите корректную цену");
+    if (costPrice === null) return error("Укажите корректную закупочную цену");
     if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) {
       return error("Укажите корректное количество");
     }
@@ -214,9 +217,9 @@ export async function handle(req: Request): Promise<Response> {
       try {
         const result = (await db
           .query(
-            "INSERT INTO products (sku, name, price, stock, category, size, color) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *",
+            "INSERT INTO products (sku, name, price, cost_price, stock, category, size, color) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *",
           )
-          .get(sku, name, price, stock, category, size, color)) as Product;
+          .get(sku, name, price, costPrice, stock, category, size, color)) as Product;
         return json(result, 201);
       } catch (e) {
         if (!isUniqueViolation(e)) throw e;
@@ -234,6 +237,7 @@ export async function handle(req: Request): Promise<Response> {
     const body = await parseBody<{
       name?: string;
       price?: number;
+      cost_price?: number;
       stock?: number;
       sku?: string;
       category?: string;
@@ -242,6 +246,8 @@ export async function handle(req: Request): Promise<Response> {
     }>(req);
     const name = trimmed(body.name) ?? existing.name;
     const price = body.price !== undefined ? parseMinor(body.price) : existing.price;
+    const costPrice =
+      body.cost_price !== undefined ? parseMinor(body.cost_price) : existing.cost_price;
     const stock = body.stock !== undefined ? Number(body.stock) : existing.stock;
     const category = trimmed(body.category) ?? existing.category;
     const size = trimmed(body.size, 50) ?? existing.size;
@@ -254,15 +260,16 @@ export async function handle(req: Request): Promise<Response> {
     }
     if (!name) return error("Укажите название товара");
     if (price === null) return error("Укажите корректную цену");
+    if (costPrice === null) return error("Укажите корректную закупочную цену");
     if (!Number.isInteger(stock) || stock < 0 || stock > 1_000_000) {
       return error("Укажите корректное количество");
     }
     try {
       const result = (await db
         .query(
-          "UPDATE products SET sku = ?, name = ?, price = ?, stock = ?, category = ?, size = ?, color = ? WHERE id = ? RETURNING *",
+          "UPDATE products SET sku = ?, name = ?, price = ?, cost_price = ?, stock = ?, category = ?, size = ?, color = ? WHERE id = ? RETURNING *",
         )
-        .get(sku, name, price, stock, category, size, color, id)) as Product;
+        .get(sku, name, price, costPrice, stock, category, size, color, id)) as Product;
       return json(result);
     } catch (e) {
       if (!isUniqueViolation(e)) throw e;
@@ -402,39 +409,61 @@ export async function handle(req: Request): Promise<Response> {
   }
 
   if (method === "POST" && pathname === "/api/sales") {
-    const body = await parseBody<{ items?: { product_id: number; qty: number }[] }>(req);
+    const body = await parseBody<{
+      items?: { product_id: number; qty: number; unit_price?: number }[];
+    }>(req);
     const requestedItems = body.items ?? [];
     if (!Array.isArray(requestedItems) || !requestedItems.length) return error("Корзина пуста");
     if (requestedItems.length > 500) return error("Слишком много позиций в продаже");
 
-    const combined = new Map<number, number>();
+    // Один и тот же товар может уйти в одной продаже по разной цене, поэтому позиции
+    // схлопываются по паре «товар + цена», а не по одному товару.
+    const combined = new Map<string, { product_id: number; qty: number; unit_price: number | null }>();
     for (const item of requestedItems) {
       const productId = Number(item?.product_id);
       const qty = Number(item?.qty);
       if (!Number.isInteger(productId) || !Number.isInteger(qty) || qty < 1) {
         return error("Некорректная позиция в продаже");
       }
-      combined.set(productId, (combined.get(productId) ?? 0) + qty);
+      // Цену можно не передавать — тогда берётся продажная цена товара.
+      let unitPrice: number | null = null;
+      if (item?.unit_price !== undefined && item?.unit_price !== null) {
+        unitPrice = parseMinor(item.unit_price);
+        if (unitPrice === null) return error("Укажите корректную цену продажи");
+      }
+      const key = `${productId}:${unitPrice ?? "default"}`;
+      const existing = combined.get(key);
+      if (existing) existing.qty += qty;
+      else combined.set(key, { product_id: productId, qty, unit_price: unitPrice });
     }
-    const items = [...combined].map(([product_id, qty]) => ({ product_id, qty }));
+    const items = [...combined.values()];
 
     try {
       const sale = await withTransaction(async (tx) => {
         let total = 0;
         const lines: { product: Product; qty: number; unit_price: number }[] = [];
+        const products = new Map<number, Product>();
+        const soldQty = new Map<number, number>();
 
         for (const item of items) {
-          const qty = Number(item.qty);
-          if (!Number.isInteger(qty) || qty < 1) throw new Error("Некорректное количество");
-          const product = (await tx
-            .query("SELECT * FROM products WHERE id = ?")
-            .get(item.product_id)) as Product | null;
-          if (!product) throw new Error("Товар не найден");
+          let product = products.get(item.product_id);
+          if (!product) {
+            product = ((await tx
+              .query("SELECT * FROM products WHERE id = ?")
+              .get(item.product_id)) as Product | null) ?? undefined;
+            if (!product) throw new Error("Товар не найден");
+            products.set(item.product_id, product);
+          }
+          // Остаток проверяется по суммарному количеству: у товара может быть
+          // несколько строк с разной ценой.
+          const qty = (soldQty.get(item.product_id) ?? 0) + item.qty;
           if (product.stock < qty) {
             throw new Error(`Недостаточно товара «${product.name}» на складе`);
           }
-          total += product.price * qty;
-          lines.push({ product, qty, unit_price: product.price });
+          soldQty.set(item.product_id, qty);
+          const unitPrice = item.unit_price ?? product.price;
+          total += unitPrice * item.qty;
+          lines.push({ product, qty: item.qty, unit_price: unitPrice });
         }
 
         const insertedSale = (await tx
@@ -443,7 +472,7 @@ export async function handle(req: Request): Promise<Response> {
 
         for (const line of lines) {
           await tx.query(
-            "INSERT INTO sale_items (sale_id, product_id, product_name, sku, qty, unit_price) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO sale_items (sale_id, product_id, product_name, sku, qty, unit_price, cost_price) VALUES (?, ?, ?, ?, ?, ?, ?)",
           ).run(
             insertedSale.id,
             line.product.id,
@@ -451,11 +480,12 @@ export async function handle(req: Request): Promise<Response> {
             line.product.sku,
             line.qty,
             line.unit_price,
+            line.product.cost_price,
           );
-          await tx.query("UPDATE products SET stock = stock - ? WHERE id = ?").run(
-            line.qty,
-            line.product.id,
-          );
+        }
+
+        for (const [productId, qty] of soldQty) {
+          await tx.query("UPDATE products SET stock = stock - ? WHERE id = ?").run(qty, productId);
         }
 
         return insertedSale;
@@ -471,20 +501,24 @@ export async function handle(req: Request): Promise<Response> {
     const to = url.searchParams.get("to");
     const range = from && to ? { from, to } : todayRange();
 
-    const summary = (await db
+    const totals = (await db
       .query(
         `SELECT
            COUNT(*) AS sales_count,
            COALESCE(SUM(total), 0) AS revenue,
-           COALESCE((SELECT SUM(qty) FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.created_at >= ? AND s.created_at < ?), 0) AS units
+           COALESCE((SELECT SUM(si.qty) FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.created_at >= ? AND s.created_at < ?), 0) AS units,
+           COALESCE((SELECT SUM(si.qty * si.cost_price) FROM sale_items si JOIN sales s ON s.id = si.sale_id WHERE s.created_at >= ? AND s.created_at < ?), 0) AS cost
          FROM sales
          WHERE created_at >= ? AND created_at < ?`,
       )
-      .get(range.from, range.to, range.from, range.to)) as {
+      .get(range.from, range.to, range.from, range.to, range.from, range.to)) as {
       sales_count: number;
       revenue: number;
       units: number;
+      cost: number;
     };
+    // Прибыль считается по закупочной цене, записанной в момент продажи.
+    const summary = { ...totals, profit: totals.revenue - totals.cost };
 
     const byProduct = await db
       .query(
@@ -493,7 +527,9 @@ export async function handle(req: Request): Promise<Response> {
            si.product_name,
            si.sku,
            SUM(si.qty) AS qty,
-           SUM(si.qty * si.unit_price) AS revenue
+           SUM(si.qty * si.unit_price) AS revenue,
+           SUM(si.qty * si.cost_price) AS cost,
+           SUM(si.qty * (si.unit_price - si.cost_price)) AS profit
          FROM sale_items si
          JOIN sales s ON s.id = si.sale_id
          WHERE s.created_at >= ? AND s.created_at < ?

@@ -2,8 +2,10 @@ export type Product = {
   id: number;
   sku: string;
   name: string;
-  /** Цена в тийинах (1/100 сума). Форматируйте через money(). */
+  /** Продажная цена в тийинах (1/100 сума). Форматируйте через money(). */
   price: number;
+  /** Закупочная цена в тийинах (1/100 сума). */
+  cost_price: number;
   stock: number;
   category: string;
   size: string;
@@ -13,13 +15,15 @@ export type Product = {
 
 export type Report = {
   range: { from: string; to: string };
-  summary: { sales_count: number; revenue: number; units: number };
+  summary: { sales_count: number; revenue: number; units: number; cost: number; profit: number };
   byProduct: {
     product_id: number;
     product_name: string;
     sku: string;
     qty: number;
     revenue: number;
+    cost: number;
+    profit: number;
   }[];
   recent: { id: number; created_at: string; total: number }[];
   lowStock: Product[];
@@ -91,7 +95,7 @@ export const api = {
   products: () => fetch("/api/products").then((r) => parse<Product[]>(r)),
   productByBarcode: (barcode: string) =>
     fetch(`/api/products/barcode/${encodeURIComponent(barcode)}`).then((r) => parse<Product>(r)),
-  createProduct: (body: { name: string; price: number; stock: number; sku?: string; category: string; size: string; color: string }) =>
+  createProduct: (body: { name: string; price: number; cost_price: number; stock: number; sku?: string; category: string; size: string; color: string }) =>
     fetch("/api/products", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -99,7 +103,7 @@ export const api = {
     }).then((r) => parse<Product>(r)),
   updateProduct: (
     id: number,
-    body: { name: string; price: number; stock: number; sku: string; category: string; size: string; color: string },
+    body: { name: string; price: number; cost_price: number; stock: number; sku: string; category: string; size: string; color: string },
   ) =>
     fetch(`/api/products/${id}`, {
       method: "PATCH",
@@ -108,7 +112,7 @@ export const api = {
     }).then((r) => parse<Product>(r)),
   deleteProduct: (id: number) =>
     fetch(`/api/products/${id}`, { method: "DELETE" }).then((r) => parse<{ ok: boolean }>(r)),
-  checkout: (items: { product_id: number; qty: number }[]) =>
+  checkout: (items: { product_id: number; qty: number; unit_price: number }[]) =>
     fetch("/api/sales", {
       method: "POST",
       headers: { "content-type": "application/json" },

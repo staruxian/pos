@@ -1,13 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Minus, Plus, ScanBarcode, Shirt, ShoppingBag, Trash2 } from "lucide-react";
+import { ArrowRight, Minus, Pencil, Plus, ScanBarcode, Shirt, ShoppingBag, Trash2 } from "lucide-react";
 import { api, type Product } from "@/lib/api";
-import { money } from "@/lib/utils";
+import { fromMinor, money, toMinor } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
-type Line = { product: Product; qty: number };
+// Один товар может попасть в корзину несколько раз по разной цене, поэтому у строки
+// свой ключ, а не id товара.
+type Line = { key: number; product: Product; qty: number; unitPrice: number };
+
+type PriceDialog = {
+  mode: "add" | "edit";
+  key?: number;
+  product: Product;
+  qty: string;
+  price: string;
+};
 
 export function SellPage({
   products,
@@ -21,27 +39,35 @@ export function SellPage({
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [category, setCategory] = useState("Все");
+  const [dialog, setDialog] = useState<PriceDialog | null>(null);
+  const [dialogError, setDialogError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const nextKey = useRef(0);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
 
-  function addProduct(product: Product, qty = 1) {
+  /** Сколько ещё можно взять со склада с учётом других строк того же товара. */
+  function available(lines: Line[], product: Product, exceptKey?: number) {
+    const taken = lines
+      .filter((l) => l.product.id === product.id && l.key !== exceptKey)
+      .reduce((n, l) => n + l.qty, 0);
+    return product.stock - taken;
+  }
+
+  function addLine(product: Product, qty: number, unitPrice: number) {
     setMessage(null);
     setCart((prev) => {
-      const existing = prev.find((l) => l.product.id === product.id);
-      const nextQty = (existing?.qty ?? 0) + qty;
-      if (nextQty > product.stock) {
+      if (qty > available(prev, product)) {
         setMessage(`Для товара «${product.name}» доступно только ${product.stock} шт.`);
         return prev;
       }
-      if (existing) {
-        return prev.map((l) =>
-          l.product.id === product.id ? { ...l, qty: nextQty } : l,
-        );
+      const same = prev.find((l) => l.product.id === product.id && l.unitPrice === unitPrice);
+      if (same) {
+        return prev.map((l) => (l.key === same.key ? { ...l, qty: l.qty + qty } : l));
       }
-      return [...prev, { product, qty }];
+      return [...prev, { key: (nextKey.current += 1), product, qty, unitPrice }];
     });
   }
 
@@ -54,27 +80,62 @@ export function SellPage({
       const product =
         products.find((p) => p.sku.toLowerCase() === sku.toLowerCase()) ??
         (await api.productByBarcode(sku));
-      addProduct(product, 1);
+      // Сканирование не тормозим диалогом: товар уходит в корзину по цене продажи,
+      // а цену строки можно поправить прямо в корзине.
+      addLine(product, 1, product.price);
     } catch {
       setMessage(`Товар со штрихкодом ${sku} не найден`);
     }
     inputRef.current?.focus();
   }
 
-  function setQty(id: number, qty: number) {
+  function openAdd(product: Product) {
+    setMessage(null);
+    setDialogError(null);
+    setDialog({ mode: "add", product, qty: "1", price: fromMinor(product.price) });
+  }
+
+  function openEdit(line: Line) {
+    setDialogError(null);
+    setDialog({
+      mode: "edit",
+      key: line.key,
+      product: line.product,
+      qty: String(line.qty),
+      price: fromMinor(line.unitPrice),
+    });
+  }
+
+  function submitDialog(e: React.FormEvent) {
+    e.preventDefault();
+    if (!dialog) return;
+    const qty = Number(dialog.qty);
+    const unitPrice = toMinor(dialog.price);
+    if (!Number.isInteger(qty) || qty < 1) return setDialogError("Укажите количество от 1");
+    if (unitPrice === null) return setDialogError("Укажите корректную цену");
+    const left = available(cart, dialog.product, dialog.key);
+    if (qty > left) return setDialogError(`Доступно только ${Math.max(left, 0)} шт.`);
+
+    if (dialog.mode === "add") {
+      addLine(dialog.product, qty, unitPrice);
+    } else {
+      setCart((prev) => prev.map((l) => (l.key === dialog.key ? { ...l, qty, unitPrice } : l)));
+    }
+    setDialog(null);
+    inputRef.current?.focus();
+  }
+
+  function setQty(key: number, qty: number) {
     setCart((prev) =>
-      prev
-        .map((l) => {
-          if (l.product.id !== id) return l;
-          const next = Math.max(1, Math.min(qty, l.product.stock));
-          return { ...l, qty: next };
-        })
-        .filter((l) => l.qty > 0),
+      prev.map((l) => {
+        if (l.key !== key) return l;
+        return { ...l, qty: Math.max(1, Math.min(qty, available(prev, l.product, key))) };
+      }),
     );
   }
 
   const total = useMemo(
-    () => cart.reduce((sum, l) => sum + l.product.price * l.qty, 0),
+    () => cart.reduce((sum, l) => sum + l.unitPrice * l.qty, 0),
     [cart],
   );
   const categories = useMemo(
@@ -89,7 +150,7 @@ export function SellPage({
     setMessage(null);
     try {
       const sale = await api.checkout(
-        cart.map((l) => ({ product_id: l.product.id, qty: l.qty })),
+        cart.map((l) => ({ product_id: l.product.id, qty: l.qty, unit_price: l.unitPrice })),
       );
       setCart([]);
       setMessage(`Продажа №${sale.id} оформлена · ${money(sale.total)}`);
@@ -101,6 +162,9 @@ export function SellPage({
       inputRef.current?.focus();
     }
   }
+
+  const dialogPrice = dialog ? toMinor(dialog.price) : null;
+  const dialogQty = dialog ? Number(dialog.qty) : 0;
 
   return (
     <div>
@@ -147,7 +211,7 @@ export function SellPage({
             <button
               key={p.id}
               type="button"
-              onClick={() => addProduct(p)}
+              onClick={() => openAdd(p)}
               disabled={p.stock < 1}
               className="group min-h-44 overflow-hidden rounded-[var(--radius)] border bg-card text-left shadow-xs transition-all hover:-translate-y-1 hover:border-primary/30 hover:shadow-md disabled:opacity-40"
             >
@@ -180,7 +244,7 @@ export function SellPage({
           )}
           <div className="space-y-3">
             {cart.map((line) => (
-              <div key={line.product.id} className="rounded-2xl bg-muted/65 p-3.5">
+              <div key={line.key} className="rounded-2xl bg-muted/65 p-3.5">
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <div className="font-medium">{line.product.name}</div>
@@ -190,20 +254,32 @@ export function SellPage({
                     size="icon"
                     variant="ghost"
                     aria-label={`Убрать товар ${line.product.name}`}
-                    onClick={() =>
-                      setCart((prev) => prev.filter((l) => l.product.id !== line.product.id))
-                    }
+                    onClick={() => setCart((prev) => prev.filter((l) => l.key !== line.key))}
                   >
                     <Trash2 />
                   </Button>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => openEdit(line)}
+                  className="mt-2 flex w-full items-center gap-2 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition hover:bg-card"
+                  aria-label={`Изменить цену товара ${line.product.name}`}
+                >
+                  <Pencil className="size-3" />
+                  <span>Цена: {money(line.unitPrice)}</span>
+                  {line.unitPrice !== line.product.price && (
+                    <Badge variant="secondary" className="rounded-full">
+                      {line.unitPrice < line.product.price ? "скидка" : "наценка"} {money(Math.abs(line.unitPrice - line.product.price))}
+                    </Badge>
+                  )}
+                </button>
                 <div className="mt-2 flex items-center justify-between">
                   <div className="flex items-center gap-1">
                     <Button
                       size="icon"
                       variant="outline"
                       aria-label={`Уменьшить количество товара ${line.product.name}`}
-                      onClick={() => setQty(line.product.id, line.qty - 1)}
+                      onClick={() => setQty(line.key, line.qty - 1)}
                     >
                       <Minus />
                     </Button>
@@ -213,18 +289,18 @@ export function SellPage({
                       min={1}
                       max={line.product.stock}
                       value={line.qty}
-                      onChange={(e) => setQty(line.product.id, Number(e.target.value))}
+                      onChange={(e) => setQty(line.key, Number(e.target.value))}
                     />
                     <Button
                       size="icon"
                       variant="outline"
                       aria-label={`Увеличить количество товара ${line.product.name}`}
-                      onClick={() => setQty(line.product.id, line.qty + 1)}
+                      onClick={() => setQty(line.key, line.qty + 1)}
                     >
                       <Plus />
                     </Button>
                   </div>
-                  <div className="font-medium">{money(line.product.price * line.qty)}</div>
+                  <div className="font-medium">{money(line.unitPrice * line.qty)}</div>
                 </div>
               </div>
             ))}
@@ -239,6 +315,67 @@ export function SellPage({
         </CardContent>
       </Card>
       </div>
+
+      <Dialog open={!!dialog} onOpenChange={(open) => { if (!open) setDialog(null); }}>
+        <DialogContent className="max-w-sm">
+          {dialog && (
+            <form onSubmit={submitDialog} className="grid gap-4">
+              <DialogHeader>
+                <DialogTitle>{dialog.product.name}</DialogTitle>
+                <DialogDescription>
+                  {[dialog.product.category, dialog.product.size, dialog.product.color].filter(Boolean).join(" · ")}
+                  {" · "}Цена продажи {money(dialog.product.price)}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="sell-qty">Количество</Label>
+                  <Input
+                    id="sell-qty"
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={dialog.qty}
+                    onChange={(e) => setDialog({ ...dialog, qty: e.target.value })}
+                  />
+                </div>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="sell-price">Цена за штуку</Label>
+                  <Input
+                    id="sell-price"
+                    type="number"
+                    min={0}
+                    step="0.01"
+                    autoFocus
+                    value={dialog.price}
+                    onChange={(e) => setDialog({ ...dialog, price: e.target.value })}
+                    onFocus={(e) => e.target.select()}
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-between rounded-xl bg-muted/65 px-3 py-2 text-sm">
+                <span className="text-muted-foreground">
+                  {dialogPrice !== null && dialogPrice !== dialog.product.price
+                    ? `${dialogPrice < dialog.product.price ? "Скидка" : "Наценка"} ${money(Math.abs(dialogPrice - dialog.product.price))}`
+                    : "Цена по прайсу"}
+                </span>
+                <span className="font-semibold">
+                  {money(dialogPrice !== null && dialogQty > 0 ? dialogPrice * dialogQty : 0)}
+                </span>
+              </div>
+              {dialogError && <p className="text-sm text-destructive">{dialogError}</p>}
+              <div className="flex gap-2">
+                <Button type="button" variant="outline" className="flex-1" onClick={() => setDialog(null)}>
+                  Отмена
+                </Button>
+                <Button type="submit" className="flex-1">
+                  {dialog.mode === "add" ? "В корзину" : "Сохранить"}
+                </Button>
+              </div>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
