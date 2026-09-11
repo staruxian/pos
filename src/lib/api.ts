@@ -53,6 +53,8 @@ export type Expense = {
   /** Сумма в тийинах (1/100 сума). */
   amount: number;
   note: string;
+  /** `expense` — трата магазина, `withdrawal` — деньги забрали из кассы. */
+  kind: "expense" | "withdrawal";
   created_at: string;
 };
 
@@ -60,10 +62,18 @@ export type Balance = {
   balance: number;
   income: number;
   spent: number;
+  /** Деньги, вынутые из кассы: уменьшают баланс, но не прибыль. */
+  withdrawn: number;
+  /** Реализованная маржа: продано минус закупка проданного. */
+  margin: number;
+  /** Чистая прибыль: реализованная маржа минус расходы. */
+  profit: number;
   /** Последние 50 продаж — приход в кассу. */
   sales: { id: number; total: number; created_at: string }[];
   /** Последние 50 расходов. */
   expenses: Expense[];
+  /** Последние 50 изъятий. */
+  withdrawals: Expense[];
 };
 
 export type Client = {
@@ -166,7 +176,7 @@ export const api = {
   deleteSale: (id: number) =>
     fetch(`/api/sales/${id}`, { method: "DELETE" }).then((r) => parse<{ ok: boolean }>(r)),
   balance: () => fetch("/api/balance").then((r) => parse<Balance>(r)),
-  createExpense: (body: { amount: number; note: string }) =>
+  createExpense: (body: { amount: number; note: string; kind: "expense" | "withdrawal" }) =>
     fetch("/api/expenses", {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -65,6 +65,7 @@ const schema = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     amount INTEGER NOT NULL CHECK (amount > 0),
     note TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'expense' CHECK (kind IN ('expense', 'withdrawal')),
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_expenses_created_at ON expenses(created_at DESC)`,
@@ -87,6 +88,10 @@ async function initializeDatabase() {
   // не менялась задним числом при переоценке товара.
   await addMissingColumns("sale_items", [
     ["cost_price", "ALTER TABLE sale_items ADD COLUMN cost_price INTEGER NOT NULL DEFAULT 0"],
+  ]);
+  // Записи, созданные до появления изъятий, — обычные расходы.
+  await addMissingColumns("expenses", [
+    ["kind", "ALTER TABLE expenses ADD COLUMN kind TEXT NOT NULL DEFAULT 'expense'"],
   ]);
 
   await client.batch(
@@ -229,6 +234,8 @@ export type Expense = {
   /** Сумма в тийинах (1/100 сума), целое число. */
   amount: number;
   note: string;
+  /** `expense` — трата магазина, `withdrawal` — деньги забрали из кассы. */
+  kind: "expense" | "withdrawal";
   created_at: string;
 };
 
