@@ -22,6 +22,8 @@ import {
 
 const PORT = Number(process.env.PORT ?? 3001);
 
+type Sale = { id: number; created_at: string; total: number };
+
 // Заголовки, которые должны стоять на каждом ответе API.
 const baseHeaders = {
   "x-content-type-options": "nosniff",
@@ -468,7 +470,7 @@ export async function handle(req: Request): Promise<Response> {
 
         const insertedSale = (await tx
           .query("INSERT INTO sales (total) VALUES (?) RETURNING *")
-          .get(total)) as { id: number; created_at: string; total: number };
+          .get(total)) as Sale;
 
         for (const line of lines) {
           await tx.query(
@@ -494,6 +496,83 @@ export async function handle(req: Request): Promise<Response> {
     } catch (e) {
       return error(e instanceof Error ? e.message : "Не удалось оформить продажу");
     }
+  }
+
+  if (method === "GET" && pathname.match(/^\/api\/sales\/\d+$/)) {
+    const id = Number(pathname.split("/").at(-1));
+    const sale = (await db.query("SELECT * FROM sales WHERE id = ?").get(id)) as Sale | null;
+    if (!sale) return error("Продажа не найдена", 404);
+    const items = await db
+      .query("SELECT * FROM sale_items WHERE sale_id = ? ORDER BY id")
+      .all(id);
+    return json({ ...sale, items });
+  }
+
+  // Правится только цена продажи: количество и состав продажи трогать нельзя,
+  // иначе пришлось бы пересчитывать остатки задним числом.
+  if (method === "PATCH" && pathname.match(/^\/api\/sales\/\d+$/)) {
+    const id = Number(pathname.split("/").at(-1));
+    const body = await parseBody<{ items?: { id?: number; unit_price?: number }[] }>(req);
+    const requested = body.items ?? [];
+    if (!Array.isArray(requested) || !requested.length) return error("Нечего сохранять");
+    if (requested.length > 500) return error("Слишком много позиций в продаже");
+
+    const prices = new Map<number, number>();
+    for (const item of requested) {
+      const itemId = Number(item?.id);
+      const unitPrice = parseMinor(item?.unit_price);
+      if (!Number.isInteger(itemId)) return error("Некорректная позиция продажи");
+      if (unitPrice === null) return error("Укажите корректную цену продажи");
+      prices.set(itemId, unitPrice);
+    }
+
+    const existing = (await db
+      .query("SELECT id FROM sale_items WHERE sale_id = ?")
+      .all(id)) as { id: number }[];
+    if (!existing.length) return error("Продажа не найдена", 404);
+    const known = new Set(existing.map((row) => row.id));
+    for (const itemId of prices.keys()) {
+      if (!known.has(itemId)) return error("Позиция не найдена в этой продаже", 404);
+    }
+
+    const sale = await withTransaction(async (tx) => {
+      for (const [itemId, unitPrice] of prices) {
+        await tx
+          .query("UPDATE sale_items SET unit_price = ? WHERE id = ? AND sale_id = ?")
+          .run(unitPrice, itemId, id);
+      }
+      // Итог продажи всегда пересобирается из позиций, а не правится на разницу.
+      const recalculated = (await tx
+        .query("SELECT COALESCE(SUM(qty * unit_price), 0) AS total FROM sale_items WHERE sale_id = ?")
+        .get(id)) as { total: number };
+      return (await tx
+        .query("UPDATE sales SET total = ? WHERE id = ? RETURNING *")
+        .get(recalculated.total, id)) as Sale;
+    });
+    return json(sale);
+  }
+
+  if (method === "DELETE" && pathname.match(/^\/api\/sales\/\d+$/)) {
+    const id = Number(pathname.split("/").at(-1));
+    if (!(await db.query("SELECT 1 FROM sales WHERE id = ?").get(id))) {
+      return error("Продажа не найдена", 404);
+    }
+    await withTransaction(async (tx) => {
+      // Отменённая продажа возвращает товар на склад.
+      const items = (await tx
+        .query("SELECT product_id, qty FROM sale_items WHERE sale_id = ?")
+        .all(id)) as { product_id: number; qty: number }[];
+      for (const item of items) {
+        await tx
+          .query("UPDATE products SET stock = stock + ? WHERE id = ?")
+          .run(item.qty, item.product_id);
+      }
+      // ON DELETE CASCADE работает только при включённых внешних ключах, поэтому
+      // позиции удаляем явно.
+      await tx.query("DELETE FROM sale_items WHERE sale_id = ?").run(id);
+      await tx.query("DELETE FROM sales WHERE id = ?").run(id);
+    });
+    return json({ ok: true });
   }
 
   if (method === "GET" && pathname === "/api/reports") {
