@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Barcode, Pencil, Plus, Search, Shirt, Trash2 } from "lucide-react";
+import { Barcode, Boxes, Layers, Pencil, Plus, Search, Shirt, TrendingUp, Trash2, Wallet } from "lucide-react";
 import { api, type Product } from "@/lib/api";
 import { printLabel } from "@/lib/printer";
 import { cn, fromMinor, money, toMinor } from "@/lib/utils";
@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { PageHeader } from "@/components/page-header";
+import { StatCard } from "@/components/stat-card";
 import {
   Dialog,
   DialogContent,
@@ -43,6 +45,7 @@ export function ProductsPage({
   const [printing, setPrinting] = useState(false);
   const [printResult, setPrintResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [query, setQuery] = useState("");
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return q
@@ -53,6 +56,19 @@ export function ProductsPage({
         )
       : products;
   }, [products, query]);
+
+  const summary = useMemo(
+    () =>
+      products.reduce(
+        (acc, p) => ({
+          units: acc.units + p.stock,
+          cost: acc.cost + p.cost_price * p.stock,
+          margin: acc.margin + (p.price - p.cost_price) * p.stock,
+        }),
+        { units: 0, cost: 0, margin: 0 },
+      ),
+    [products],
+  );
 
   function startCreate() {
     setEditing(null);
@@ -143,42 +159,78 @@ export function ProductsPage({
     }
   }
 
+  const formMargin = (() => {
+    const price = toMinor(form.price);
+    const cost = toMinor(form.cost.trim() || "0");
+    if (price === null || cost === null || !form.price.trim()) return null;
+    return price - cost;
+  })();
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-primary">Товары</p>
-          <h2 className="text-3xl font-semibold tracking-[-0.04em] sm:text-5xl">Весь ассортимент.</h2>
-          <p className="mt-3 text-muted-foreground">Модели, размеры, цвета, остатки и ценники.</p>
-        </div>
+      <PageHeader
+        eyebrow="Склад"
+        title="Товары"
+        description="Модели, размеры, цвета, остатки и две цены — закупочная и продажная."
+      >
         <Button onClick={startCreate} size="lg">
           <Plus /> Добавить товар
         </Button>
+      </PageHeader>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Позиций" value={products.length} icon={Layers} />
+        <StatCard label="Единиц на складе" value={summary.units} icon={Boxes} />
+        <StatCard label="Вложено в закупку" value={money(summary.cost)} icon={Wallet} />
+        <StatCard
+          label="Маржа в остатках"
+          value={money(summary.margin)}
+          hint="Если продать всё по прайсу"
+          icon={TrendingUp}
+          tone={summary.margin < 0 ? "debt" : "profit"}
+        />
       </div>
-      <div className="relative max-w-md">
-        <Search className="pointer-events-none absolute left-4 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Поиск по товару или штрихкоду" className="h-12 bg-card pl-11" />
-      </div>
+
       <div className="overflow-hidden rounded-[var(--radius)] border bg-card shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 py-3.5">
+          <div className="relative w-full max-w-sm">
+            <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Поиск по названию, цвету или штрихкоду"
+              className="pl-10"
+            />
+          </div>
+          <span className="text-sm text-muted-foreground">
+            Показано: {filtered.length} из {products.length}
+          </span>
+        </div>
+
         <Table>
           <TableHeader>
-            <TableRow>
-              <TableHead>Товар</TableHead>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="pl-5">Товар</TableHead>
               <TableHead>Вариант</TableHead>
               <TableHead>Штрихкод</TableHead>
               <TableHead className="text-right">Закупка</TableHead>
               <TableHead className="text-right">Продажа</TableHead>
               <TableHead className="text-right">Остаток</TableHead>
-              <TableHead />
+              <TableHead className="pr-5" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.map((p) => (
               <TableRow key={p.id}>
-                <TableCell>
+                <TableCell className="pl-5">
                   <div className="flex items-center gap-3">
-                    <div className="grid size-10 place-items-center rounded-xl bg-muted"><Shirt className="size-4" /></div>
-                    <div><div className="font-semibold">{p.name}</div><div className="text-xs text-muted-foreground">{p.category}</div></div>
+                    <div className="grid size-9 shrink-0 place-items-center rounded-full bg-muted text-muted-foreground">
+                      <Shirt className="size-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate font-semibold">{p.name}</div>
+                      <div className="text-xs text-muted-foreground">{p.category}</div>
+                    </div>
                   </div>
                 </TableCell>
                 <TableCell>
@@ -188,20 +240,30 @@ export function ProductsPage({
                     {!p.size && !p.color && <span className="text-sm text-muted-foreground">—</span>}
                   </div>
                 </TableCell>
-                <TableCell className="font-mono text-xs">{p.sku}</TableCell>
-                <TableCell className="text-right text-muted-foreground">{money(p.cost_price)}</TableCell>
+                <TableCell className="font-mono text-xs text-muted-foreground">{p.sku}</TableCell>
+                <TableCell className="text-right tabular-nums text-muted-foreground">
+                  {p.cost_price > 0 ? money(p.cost_price) : "—"}
+                </TableCell>
                 <TableCell className="text-right">
-                  {money(p.price)}
+                  <div className="font-semibold tabular-nums">{money(p.price)}</div>
                   {p.cost_price > 0 && (
-                    <div className="text-xs text-muted-foreground">
-                      +{money(p.price - p.cost_price)}
+                    <div
+                      className={cn(
+                        "text-xs tabular-nums",
+                        p.price < p.cost_price ? "text-destructive" : "text-emerald-600",
+                      )}
+                    >
+                      {p.price < p.cost_price ? "" : "+"}
+                      {money(p.price - p.cost_price)}
                     </div>
                   )}
                 </TableCell>
                 <TableCell className="text-right">
-                  <Badge variant={p.stock <= 5 ? "destructive" : "secondary"}>{p.stock}</Badge>
+                  <Badge variant={p.stock <= 5 ? "destructive" : "secondary"} className="rounded-full">
+                    {p.stock}
+                  </Badge>
                 </TableCell>
-                <TableCell className="text-right">
+                <TableCell className="pr-5 text-right whitespace-nowrap">
                   <Button size="icon" variant="ghost" onClick={() => setBarcodeProduct(p)} title="Штрихкод" aria-label={`Штрихкод товара ${p.name}`}>
                     <Barcode />
                   </Button>
@@ -215,9 +277,15 @@ export function ProductsPage({
               </TableRow>
             ))}
             {!filtered.length && (
-              <TableRow>
-                <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
-                  {query ? "По вашему запросу ничего не найдено." : "Товаров пока нет."}
+              <TableRow className="hover:bg-transparent">
+                <TableCell colSpan={7} className="py-14 text-center">
+                  <div className="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-muted text-muted-foreground">
+                    <Shirt className="size-5" />
+                  </div>
+                  <p className="font-medium">{query ? "Ничего не найдено" : "Товаров пока нет"}</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {query ? "Измените запрос или очистите поиск." : "Добавьте первую позицию — штрихкод создастся сам."}
+                  </p>
                 </TableCell>
               </TableRow>
             )}
@@ -297,6 +365,14 @@ export function ProductsPage({
                 />
               </div>
             </div>
+            {formMargin !== null && (
+              <p className="rounded-xl bg-muted/65 px-3 py-2 text-sm text-muted-foreground">
+                Маржа с одной штуки:{" "}
+                <span className={cn("font-semibold tabular-nums", formMargin < 0 ? "text-destructive" : "text-emerald-600")}>
+                  {money(formMargin)}
+                </span>
+              </p>
+            )}
             <div className="grid gap-1.5">
               <Label htmlFor="sku">Номер штрихкода (необязательно)</Label>
               <Input
@@ -310,7 +386,7 @@ export function ProductsPage({
               <p className="text-xs text-muted-foreground">Ограничений по длине нет. Если поле пустое, номер создастся автоматически.</p>
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
-            <Button onClick={save}>Сохранить</Button>
+            <Button size="lg" onClick={save}>Сохранить</Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -324,7 +400,7 @@ export function ProductsPage({
           }
         }}
       >
-        <DialogContent>
+        <DialogContent className="max-w-sm">
           {barcodeProduct && (
             <>
               <DialogHeader>
@@ -332,16 +408,16 @@ export function ProductsPage({
                 <DialogDescription>{[barcodeProduct.category, barcodeProduct.size, barcodeProduct.color].filter(Boolean).join(" · ")} · формат Code 128</DialogDescription>
               </DialogHeader>
               <div className="flex flex-col items-center gap-3">
-                <div className="w-full max-w-sm rounded-2xl border bg-white p-4">
+                <div className="w-full rounded-2xl border bg-white p-4">
                   <img
                     src={`/api/products/${barcodeProduct.id}/barcode`}
                     alt={`Штрихкод товара ${barcodeProduct.name}`}
                     className="h-auto w-full"
                   />
                 </div>
-                <p className="font-mono text-sm">{barcodeProduct.sku}</p>
-                <Button variant="outline" disabled={printing} onClick={() => void sendToPrinter(barcodeProduct)}>
-                  {printing ? "Печать…" : "Печать"}
+                <p className="font-mono text-sm text-muted-foreground">{barcodeProduct.sku}</p>
+                <Button className="w-full" disabled={printing} onClick={() => void sendToPrinter(barcodeProduct)}>
+                  {printing ? "Печать…" : "Печать этикетки"}
                 </Button>
                 {printResult && (
                   <p className={cn("text-sm", printResult.ok ? "text-muted-foreground" : "text-destructive")}>

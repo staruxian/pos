@@ -120,9 +120,9 @@ export function App() {
           )}
         </div>
       </header>
-      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-10">
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8">
         {loadError && (
-          <p className="mb-6 rounded-2xl border border-destructive/20 bg-destructive/8 px-4 py-3 text-sm">
+          <p className="mb-6 rounded-2xl border border-destructive/20 bg-destructive/8 px-4 py-3 text-sm text-destructive">
             {loadError}.
             {import.meta.env.DEV && <> Запустите локальный сервер командой <code>bun run dev:server</code>.</>}
           </p>

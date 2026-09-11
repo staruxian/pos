@@ -27,6 +27,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/page-header";
+import { StatCard } from "@/components/stat-card";
 
 type ClientForm = { name: string; number: string };
 type Operation = "debt" | "payment";
@@ -190,22 +192,21 @@ export function ClientsPage() {
   }
 
   return (
-    <div className="space-y-7">
-      <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-primary">Долговая тетрадь</p>
-          <h2 className="text-3xl font-semibold tracking-[-0.04em] sm:text-5xl">Клиенты и долги.</h2>
-          <p className="mt-3 text-muted-foreground">Начисляйте долг, принимайте оплату и сохраняйте историю.</p>
-        </div>
+    <div className="space-y-6">
+      <PageHeader
+        eyebrow="Долговая тетрадь"
+        title="Клиенты"
+        description="Начисляйте долг, принимайте оплату и сохраняйте историю."
+      >
         <Button size="lg" onClick={startCreate}><Plus /> Добавить клиента</Button>
-      </div>
+      </PageHeader>
 
       {error && <p className="rounded-2xl bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</p>}
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <Card><CardContent className="flex items-center justify-between p-5"><div><p className="text-sm text-muted-foreground">Всего клиентов</p><p className="mt-1 text-2xl font-semibold">{summary.total}</p></div><Users className="size-5 text-primary" /></CardContent></Card>
-        <Card><CardContent className="flex items-center justify-between p-5"><div><p className="text-sm text-muted-foreground">С долгом</p><p className="mt-1 text-2xl font-semibold">{summary.debtors}</p></div><WalletCards className="size-5 text-primary" /></CardContent></Card>
-        <Card><CardContent className="flex items-center justify-between p-5"><div><p className="text-sm text-muted-foreground">Общий долг</p><p className="mt-1 text-2xl font-semibold">{money(summary.debt)}</p></div><HandCoins className="size-5 text-primary" /></CardContent></Card>
+        <StatCard label="Всего клиентов" value={summary.total} icon={Users} />
+        <StatCard label="С долгом" value={summary.debtors} icon={WalletCards} />
+        <StatCard label="Общий долг" value={money(summary.debt)} icon={HandCoins} tone={summary.debt > 0 ? "debt" : "default"} />
       </div>
 
       <div className="grid gap-5 lg:grid-cols-[340px_minmax(0,1fr)]">
@@ -226,7 +227,7 @@ export function ClientsPage() {
               >
                 <div className="grid size-10 shrink-0 place-items-center rounded-full bg-primary/10 text-primary"><UserRound className="size-4" /></div>
                 <div className="min-w-0 flex-1"><p className="truncate font-semibold">{client.name}</p><p className="truncate text-xs text-muted-foreground">{client.number}</p></div>
-                <div className="text-right"><p className={`text-sm font-semibold ${client.balance > 0 ? "text-destructive" : "text-muted-foreground"}`}>{money(client.balance)}</p><p className="text-[11px] text-muted-foreground">долг</p></div>
+                <div className="text-right"><p className={`text-sm font-semibold tabular-nums ${client.balance > 0 ? "text-destructive" : "text-muted-foreground"}`}>{money(client.balance)}</p><p className="text-[11px] text-muted-foreground">долг</p></div>
               </button>
             ))}
             {!loading && !filtered.length && <div className="p-8 text-center text-sm text-muted-foreground">{query ? "Клиенты не найдены" : "Добавьте первого клиента"}</div>}
@@ -242,7 +243,7 @@ export function ClientsPage() {
               </div>
               <div className="grid gap-5 p-5 sm:p-6">
                 <div className="flex flex-col gap-4 rounded-[var(--radius)] bg-muted/60 p-5 sm:flex-row sm:items-center sm:justify-between">
-                  <div><p className="text-sm text-muted-foreground">Текущий долг</p><p className={`mt-1 text-4xl font-semibold tracking-[-0.04em] ${details.balance > 0 ? "text-destructive" : "text-foreground"}`}>{money(details.balance)}</p></div>
+                  <div><p className="text-sm text-muted-foreground">Текущий долг</p><p className={`mt-1 text-4xl font-semibold tabular-nums tracking-[-0.04em] ${details.balance > 0 ? "text-destructive" : "text-foreground"}`}>{money(details.balance)}</p></div>
                   <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => startOperation("debt")}><ArrowUpRight /> Записать долг</Button><Button disabled={details.balance <= 0} onClick={() => startOperation("payment")}><ArrowDownLeft /> Принять оплату</Button></div>
                 </div>
 
@@ -253,7 +254,7 @@ export function ClientsPage() {
                       <div key={entry.id} className="flex items-center gap-3 rounded-2xl border p-3.5">
                         <div className={`grid size-9 shrink-0 place-items-center rounded-full ${entry.kind === "debt" ? "bg-destructive/10 text-destructive" : "bg-emerald-500/10 text-emerald-600"}`}>{entry.kind === "debt" ? <ArrowUpRight className="size-4" /> : <CircleCheck className="size-4" />}</div>
                         <div className="min-w-0 flex-1"><p className="font-medium">{entry.kind === "debt" ? "Начислен долг" : "Получена оплата"}</p><p className="truncate text-xs text-muted-foreground">{entry.note || "Без комментария"} · {operationTime(entry.created_at)}</p></div>
-                        <p className={`font-semibold ${entry.kind === "debt" ? "text-destructive" : "text-emerald-600"}`}>{entry.kind === "debt" ? "+" : "−"}{money(entry.amount)}</p>
+                        <p className={`font-semibold tabular-nums ${entry.kind === "debt" ? "text-destructive" : "text-emerald-600"}`}>{entry.kind === "debt" ? "+" : "−"}{money(entry.amount)}</p>
                       </div>
                     ))}
                     {!details.ledger.length && <div className="rounded-2xl border border-dashed p-10 text-center"><WalletCards className="mx-auto mb-3 size-6 text-muted-foreground" /><p className="font-medium">История пока пуста</p><p className="mt-1 text-sm text-muted-foreground">Запишите первый долг клиента.</p></div>}
