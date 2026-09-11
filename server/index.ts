@@ -591,22 +591,19 @@ export async function handle(req: Request): Promise<Response> {
     const spent = (await db
       .query("SELECT COALESCE(SUM(amount), 0) AS value FROM expenses")
       .get()) as { value: number };
-    const entries = await db
-      .query(
-        `SELECT kind, id, amount, note, created_at FROM (
-           SELECT 'sale' AS kind, id, total AS amount, '' AS note, created_at FROM sales
-           UNION ALL
-           SELECT 'expense' AS kind, id, amount, note, created_at FROM expenses
-         )
-         ORDER BY created_at DESC, kind, id DESC
-         LIMIT 50`,
-      )
+    // Приход и расход показываются двумя отдельными списками, поэтому и отдаём их порознь.
+    const sales = await db
+      .query("SELECT id, total, created_at FROM sales ORDER BY id DESC LIMIT 50")
+      .all();
+    const expenses = await db
+      .query("SELECT id, amount, note, created_at FROM expenses ORDER BY id DESC LIMIT 50")
       .all();
     return json({
       balance: income.value - spent.value,
       income: income.value,
       spent: spent.value,
-      entries,
+      sales,
+      expenses,
     });
   }
 

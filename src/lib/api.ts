@@ -56,20 +56,14 @@ export type Expense = {
   created_at: string;
 };
 
-/** Одна строка ленты баланса: продажа (приход) или расход. */
-export type BalanceEntry = {
-  kind: "sale" | "expense";
-  id: number;
-  amount: number;
-  note: string;
-  created_at: string;
-};
-
 export type Balance = {
   balance: number;
   income: number;
   spent: number;
-  entries: BalanceEntry[];
+  /** Последние 50 продаж — приход в кассу. */
+  sales: { id: number; total: number; created_at: string }[];
+  /** Последние 50 расходов. */
+  expenses: Expense[];
 };
 
 export type Client = {
