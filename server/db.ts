@@ -61,6 +61,13 @@ const schema = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_client_ledger_client_id
     ON client_ledger(client_id, id DESC)`,
+  `CREATE TABLE IF NOT EXISTS expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    amount INTEGER NOT NULL CHECK (amount > 0),
+    note TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_expenses_created_at ON expenses(created_at DESC)`,
   `CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -214,6 +221,14 @@ export type Product = {
   category: string;
   size: string;
   color: string;
+  created_at: string;
+};
+
+export type Expense = {
+  id: number;
+  /** Сумма в тийинах (1/100 сума), целое число. */
+  amount: number;
+  note: string;
   created_at: string;
 };
 

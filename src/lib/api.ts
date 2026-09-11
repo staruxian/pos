@@ -48,6 +48,30 @@ export type SaleDetails = {
   items: SaleItem[];
 };
 
+export type Expense = {
+  id: number;
+  /** Сумма в тийинах (1/100 сума). */
+  amount: number;
+  note: string;
+  created_at: string;
+};
+
+/** Одна строка ленты баланса: продажа (приход) или расход. */
+export type BalanceEntry = {
+  kind: "sale" | "expense";
+  id: number;
+  amount: number;
+  note: string;
+  created_at: string;
+};
+
+export type Balance = {
+  balance: number;
+  income: number;
+  spent: number;
+  entries: BalanceEntry[];
+};
+
 export type Client = {
   id: number;
   name: string;
@@ -147,6 +171,15 @@ export const api = {
     }).then((r) => parse<{ id: number; total: number }>(r)),
   deleteSale: (id: number) =>
     fetch(`/api/sales/${id}`, { method: "DELETE" }).then((r) => parse<{ ok: boolean }>(r)),
+  balance: () => fetch("/api/balance").then((r) => parse<Balance>(r)),
+  createExpense: (body: { amount: number; note: string }) =>
+    fetch("/api/expenses", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((r) => parse<Expense>(r)),
+  deleteExpense: (id: number) =>
+    fetch(`/api/expenses/${id}`, { method: "DELETE" }).then((r) => parse<{ ok: boolean }>(r)),
   clients: () => fetch("/api/clients").then((r) => parse<Client[]>(r)),
   client: (id: number) => fetch(`/api/clients/${id}`).then((r) => parse<ClientDetails>(r)),
   createClient: (body: { name: string; number: string }) =>

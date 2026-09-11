@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { BarChart3, LogOut, ScanBarcode, Shirt, Users } from "lucide-react";
+import { BarChart3, LogOut, ScanBarcode, Shirt, Users, Wallet } from "lucide-react";
 import { Link, NavLink, Outlet, useOutletContext } from "react-router-dom";
 import { api, UNAUTHORIZED_EVENT, UnauthorizedError, type Product } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -7,12 +7,14 @@ import { SellPage } from "@/pages/SellPage";
 import { ProductsPage } from "@/pages/ProductsPage";
 import { ReportsPage } from "@/pages/ReportsPage";
 import { ClientsPage } from "@/pages/ClientsPage";
+import { BalancePage } from "@/pages/BalancePage";
 import { LoginPage } from "@/pages/LoginPage";
 
 const tabs: { path: string; label: string; icon: typeof ScanBarcode; end?: boolean }[] = [
   { path: "/", label: "Касса", icon: ScanBarcode, end: true },
   { path: "/products", label: "Товары", icon: Shirt },
   { path: "/clients", label: "Клиенты", icon: Users },
+  { path: "/balance", label: "Баланс", icon: Wallet },
   { path: "/reports", label: "Отчёты", icon: BarChart3 },
 ];
 
@@ -75,8 +77,11 @@ export function App() {
 
   return (
     <div className="min-h-screen pb-24 sm:pb-8">
-      <header className="sticky top-0 z-40 border-b bg-background/85 backdrop-blur-2xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
+      <header className="sticky top-0 z-40 border-b">
+        {/* Размытие живёт на отдельном слое: backdrop-filter создаёт containing block,
+            и нижняя панель вкладок (position: fixed) считалась бы от шапки, а не от окна. */}
+        <div className="absolute inset-0 bg-background/85 backdrop-blur-2xl" />
+        <div className="relative mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
           <Link to="/" className="flex items-center gap-3" aria-label="Перейти на кассу">
             <div className="grid size-10 place-items-center rounded-full bg-foreground text-background shadow-lg shadow-black/10">
               <Shirt className="size-[18px]" />
@@ -86,7 +91,7 @@ export function App() {
               <p className="text-xs text-muted-foreground">Магазин одежды</p>
             </div>
           </Link>
-          <nav className="fixed inset-x-4 bottom-4 z-50 flex justify-center gap-1 rounded-2xl border bg-card/90 p-1.5 shadow-xl backdrop-blur-2xl sm:static sm:rounded-xl sm:bg-muted/80 sm:shadow-none">
+          <nav className="fixed inset-x-3 bottom-4 z-50 flex justify-center gap-0.5 rounded-2xl border bg-card/90 p-1.5 shadow-xl backdrop-blur-2xl sm:static sm:inset-x-auto sm:gap-1 sm:rounded-xl sm:bg-muted/80 sm:shadow-none">
             {tabs.map((t) => {
               const Icon = t.icon;
               return (
@@ -97,7 +102,8 @@ export function App() {
                   preventScrollReset
                   viewTransition
                   className={({ isActive }) => cn(
-                      "inline-flex flex-1 items-center justify-center gap-1.5 rounded-[10px] px-2 py-2 text-xs font-medium transition-all sm:flex-none sm:gap-2 sm:px-4 sm:text-sm",
+                      // На узком экране вкладок пять, поэтому подпись уходит под иконку.
+                      "inline-flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-[10px] px-1 py-1.5 text-[10px] font-medium leading-tight transition-all sm:flex-none sm:flex-row sm:gap-2 sm:px-4 sm:py-2 sm:text-sm",
                       isActive ? "bg-card text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground",
                     )}
                 >
@@ -172,4 +178,10 @@ export function ReportsRoute() {
 
 export function ClientsRoute() {
   return <ClientsPage />;
+}
+
+export function BalanceRoute() {
+  const { reportKey } = useAppOutlet();
+  // Продажа меняет баланс, поэтому после неё страница перемонтируется и грузится заново.
+  return <BalancePage key={reportKey} />;
 }
