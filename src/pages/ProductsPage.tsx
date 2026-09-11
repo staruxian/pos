@@ -23,9 +23,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-type Form = { name: string; price: string; stock: string; sku: string; category: string; size: string; color: string };
+type Form = { name: string; price: string; cost: string; stock: string; sku: string; category: string; size: string; color: string };
 
-const empty: Form = { name: "", price: "", stock: "", sku: "", category: "Верх", size: "", color: "" };
+const empty: Form = { name: "", price: "", cost: "", stock: "", sku: "", category: "Верх", size: "", color: "" };
 const categories = ["Верх", "Низ", "Платья", "Верхняя одежда", "Обувь", "Аксессуары"];
 
 export function ProductsPage({
@@ -66,6 +66,7 @@ export function ProductsPage({
     setForm({
       name: p.name,
       price: fromMinor(p.price),
+      cost: fromMinor(p.cost_price),
       stock: String(p.stock),
       sku: p.sku,
       category: p.category,
@@ -79,15 +80,18 @@ export function ProductsPage({
   async function save() {
     setError(null);
     const price = toMinor(form.price);
+    const cost = toMinor(form.cost.trim() || "0");
     const stock = Number(form.stock);
     if (!form.name.trim()) return setError("Укажите название");
-    if (price === null) return setError("Укажите корректную цену");
+    if (price === null) return setError("Укажите корректную цену продажи");
+    if (cost === null) return setError("Укажите корректную закупочную цену");
     if (!Number.isInteger(stock) || stock < 0) return setError("Количество должно быть целым числом");
     try {
       if (editing) {
         await api.updateProduct(editing.id, {
           name: form.name.trim(),
           price,
+          cost_price: cost,
           stock,
           sku: form.sku.trim() || editing.sku,
           category: form.category.trim() || "Без категории",
@@ -98,6 +102,7 @@ export function ProductsPage({
         await api.createProduct({
           name: form.name.trim(),
           price,
+          cost_price: cost,
           stock,
           sku: form.sku.trim() || undefined,
           category: form.category.trim() || "Без категории",
@@ -161,7 +166,8 @@ export function ProductsPage({
               <TableHead>Товар</TableHead>
               <TableHead>Вариант</TableHead>
               <TableHead>Штрихкод</TableHead>
-              <TableHead className="text-right">Цена</TableHead>
+              <TableHead className="text-right">Закупка</TableHead>
+              <TableHead className="text-right">Продажа</TableHead>
               <TableHead className="text-right">Остаток</TableHead>
               <TableHead />
             </TableRow>
@@ -183,7 +189,15 @@ export function ProductsPage({
                   </div>
                 </TableCell>
                 <TableCell className="font-mono text-xs">{p.sku}</TableCell>
-                <TableCell className="text-right">{money(p.price)}</TableCell>
+                <TableCell className="text-right text-muted-foreground">{money(p.cost_price)}</TableCell>
+                <TableCell className="text-right">
+                  {money(p.price)}
+                  {p.cost_price > 0 && (
+                    <div className="text-xs text-muted-foreground">
+                      +{money(p.price - p.cost_price)}
+                    </div>
+                  )}
+                </TableCell>
                 <TableCell className="text-right">
                   <Badge variant={p.stock <= 5 ? "destructive" : "secondary"}>{p.stock}</Badge>
                 </TableCell>
@@ -202,7 +216,7 @@ export function ProductsPage({
             ))}
             {!filtered.length && (
               <TableRow>
-                <TableCell colSpan={6} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={7} className="py-12 text-center text-muted-foreground">
                   {query ? "По вашему запросу ничего не найдено." : "Товаров пока нет."}
                 </TableCell>
               </TableRow>
@@ -247,9 +261,21 @@ export function ProductsPage({
                 <Input id="color" value={form.color} placeholder="Чёрный" onChange={(e) => setForm({ ...form, color: e.target.value })} />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid gap-3 sm:grid-cols-3">
               <div className="grid gap-1.5">
-                <Label htmlFor="price">Цена</Label>
+                <Label htmlFor="cost">Закупочная цена</Label>
+                <Input
+                  id="cost"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  placeholder="0"
+                  value={form.cost}
+                  onChange={(e) => setForm({ ...form, cost: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="price">Цена продажи</Label>
                 <Input
                   id="price"
                   type="number"

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Banknote, Boxes, ReceiptText } from "lucide-react";
+import { Banknote, Boxes, ReceiptText, TrendingUp } from "lucide-react";
 import { api, type Report } from "@/lib/api";
 import { money } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -77,7 +77,7 @@ export function ReportsPage() {
       {error && <p className="text-sm text-destructive">{error}</p>}
       {data && (
         <>
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card className="overflow-hidden">
               <CardHeader>
                 <CardTitle className="flex items-center justify-between text-sm text-muted-foreground">Выручка <Banknote className="size-4 text-primary" /></CardTitle>
@@ -100,6 +100,15 @@ export function ReportsPage() {
               </CardHeader>
               <CardContent className="text-3xl font-semibold tracking-[-0.04em]">{data.summary.units}</CardContent>
             </Card>
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center justify-between text-sm text-muted-foreground">Прибыль <TrendingUp className="size-4 text-primary" /></CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-semibold tracking-[-0.04em]">{money(data.summary.profit)}</div>
+                <p className="mt-1 text-xs text-muted-foreground">Закупка: {money(data.summary.cost)}</p>
+              </CardContent>
+            </Card>
           </div>
 
           <div className="grid gap-6 lg:grid-cols-12">
@@ -111,6 +120,7 @@ export function ReportsPage() {
                     <TableHead>Товар</TableHead>
                     <TableHead className="text-right">Количество</TableHead>
                     <TableHead className="text-right">Выручка</TableHead>
+                    <TableHead className="text-right">Прибыль</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -119,11 +129,12 @@ export function ReportsPage() {
                       <TableCell>{row.product_name}</TableCell>
                       <TableCell className="text-right">{row.qty}</TableCell>
                       <TableCell className="text-right">{money(row.revenue)}</TableCell>
+                      <TableCell className="text-right">{money(row.profit)}</TableCell>
                     </TableRow>
                   ))}
                   {!data.byProduct.length && (
                     <TableRow>
-                      <TableCell colSpan={3} className="py-6 text-center text-muted-foreground">
+                      <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">
                         За выбранный период продаж нет.
                       </TableCell>
                     </TableRow>
