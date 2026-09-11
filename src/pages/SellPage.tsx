@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Minus, Pencil, Plus, ScanBarcode, Shirt, ShoppingBag, Trash2 } from "lucide-react";
+import { ArrowRight, Minus, Pencil, Plus, ScanBarcode, ShoppingBag, Trash2 } from "lucide-react";
 import { api, type Product } from "@/lib/api";
 import { fromMinor, money, toMinor } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/page-header";
 import {
   Dialog,
   DialogContent,
@@ -38,7 +38,6 @@ export function SellPage({
   const [cart, setCart] = useState<Line[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [category, setCategory] = useState("Все");
   const [dialog, setDialog] = useState<PriceDialog | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -47,6 +46,20 @@ export function SellPage({
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  // Сканер вводит только цифры. Если кассир набирает буквы — это поиск по названию,
+  // и подсказки заменяют каталог: список короткий и появляется только по запросу.
+  const query = scan.trim();
+  const isBarcode = /^\d+$/.test(query);
+  const suggestions = useMemo(() => {
+    if (!query || isBarcode) return [];
+    const value = query.toLowerCase();
+    return products
+      .filter((p) =>
+        [p.name, p.category, p.size, p.color].some((field) => field.toLowerCase().includes(value)),
+      )
+      .slice(0, 6);
+  }, [products, query, isBarcode]);
 
   /** Сколько ещё можно взять со склада с учётом других строк того же товара. */
   function available(lines: Line[], product: Product, exceptKey?: number) {
@@ -73,20 +86,29 @@ export function SellPage({
 
   async function onScanSubmit(e: React.FormEvent) {
     e.preventDefault();
-    const sku = scan.trim();
-    if (!sku) return;
+    if (!query) return;
+    if (!isBarcode) {
+      // Enter по текстовому запросу открывает диалог для первого совпадения.
+      const first = suggestions[0];
+      if (!first) return setMessage(`Товар «${query}» не найден`);
+      return pick(first);
+    }
     setScan("");
     try {
       const product =
-        products.find((p) => p.sku.toLowerCase() === sku.toLowerCase()) ??
-        (await api.productByBarcode(sku));
+        products.find((p) => p.sku === query) ?? (await api.productByBarcode(query));
       // Сканирование не тормозим диалогом: товар уходит в корзину по цене продажи,
       // а цену строки можно поправить прямо в корзине.
       addLine(product, 1, product.price);
     } catch {
-      setMessage(`Товар со штрихкодом ${sku} не найден`);
+      setMessage(`Товар со штрихкодом ${query} не найден`);
     }
     inputRef.current?.focus();
+  }
+
+  function pick(product: Product) {
+    setScan("");
+    openAdd(product);
   }
 
   function openAdd(product: Product) {
@@ -134,15 +156,8 @@ export function SellPage({
     );
   }
 
-  const total = useMemo(
-    () => cart.reduce((sum, l) => sum + l.unitPrice * l.qty, 0),
-    [cart],
-  );
-  const categories = useMemo(
-    () => ["Все", ...Array.from(new Set(products.map((product) => product.category).filter(Boolean)))],
-    [products],
-  );
-  const visibleProducts = category === "Все" ? products : products.filter((product) => product.category === category);
+  const total = useMemo(() => cart.reduce((sum, l) => sum + l.unitPrice * l.qty, 0), [cart]);
+  const units = cart.reduce((n, line) => n + line.qty, 0);
 
   async function checkout() {
     if (!cart.length) return;
@@ -167,153 +182,169 @@ export function SellPage({
   const dialogQty = dialog ? Number(dialog.qty) : 0;
 
   return (
-    <div>
-      <div className="mb-8">
-        <p className="mb-2 text-xs font-bold uppercase tracking-[0.18em] text-primary">Новая продажа</p>
-        <h2 className="max-w-3xl text-3xl font-semibold tracking-[-0.05em] sm:text-5xl">Быстрая и удобная касса.</h2>
-        <p className="mt-3 text-muted-foreground">Отсканируйте этикетку или выберите товар из каталога.</p>
-      </div>
-      <div className="grid gap-6 lg:grid-cols-[1fr_390px]">
-      <div className="space-y-5">
-        <form onSubmit={onScanSubmit} className="relative rounded-[var(--radius)] bg-card shadow-sm">
+    <div className="mx-auto max-w-3xl space-y-6">
+      <PageHeader
+        eyebrow="Касса"
+        title="Новая продажа"
+        description="Отсканируйте этикетку товара или найдите его по названию."
+      />
+
+      <div className="relative">
+        <form onSubmit={onScanSubmit}>
           <ScanBarcode className="pointer-events-none absolute left-5 top-1/2 size-6 -translate-y-1/2 text-primary" />
           <Input
             ref={inputRef}
             value={scan}
             onChange={(e) => setScan(e.target.value)}
-            inputMode="numeric"
-            pattern="[0-9]*"
-            placeholder="Сканируйте штрихкод товара"
-            aria-label="Штрихкод товара"
-            className="h-16 rounded-[var(--radius)] border-0 bg-card pl-14 pr-24 text-lg shadow-none focus-visible:ring-4"
+            placeholder="Штрихкод или название товара"
+            aria-label="Штрихкод или название товара"
+            className="h-16 rounded-[var(--radius)] border-0 bg-card pl-14 pr-24 text-lg shadow-sm focus-visible:ring-4"
             autoComplete="off"
           />
-          <span className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 rounded-lg bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">ВВОД</span>
+          <span className="pointer-events-none absolute right-5 top-1/2 -translate-y-1/2 rounded-lg bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground">
+            ВВОД
+          </span>
         </form>
-        {message && (
-          <p className="rounded-2xl bg-accent px-4 py-3 text-sm font-medium text-accent-foreground">{message}</p>
-        )}
-        <div className="flex gap-2 overflow-x-auto pb-1 pt-2">
-          {categories.map((item) => (
-            <button
-              key={item}
-              type="button"
-              onClick={() => setCategory(item)}
-              className={`whitespace-nowrap rounded-full px-4 py-2 text-sm font-semibold transition ${category === item ? "bg-primary text-primary-foreground shadow-sm" : "border bg-card text-muted-foreground hover:text-foreground"}`}
-            >
-              {item}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center justify-between"><h3 className="text-base font-semibold">Каталог</h3><span className="text-sm text-muted-foreground">Товаров: {visibleProducts.length}</span></div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {visibleProducts.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => openAdd(p)}
-              disabled={p.stock < 1}
-              className="group min-h-44 overflow-hidden rounded-[var(--radius)] border bg-card text-left shadow-xs transition-all hover:-translate-y-1 hover:border-primary/30 hover:shadow-md disabled:opacity-40"
-            >
-              <div className="grid h-20 place-items-center bg-gradient-to-br from-muted to-card"><Shirt className="size-7 text-muted-foreground transition-transform group-hover:scale-110" /></div>
-              <div className="p-4">
-                <div className="truncate font-semibold">{p.name}</div>
-                <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <span>{p.category}</span>{p.size && <><span>·</span><span>{p.size}</span></>}{p.color && <><span>·</span><span>{p.color}</span></>}
+
+        {!!suggestions.length && (
+          <div className="absolute inset-x-0 top-[4.5rem] z-30 overflow-hidden rounded-[var(--radius)] border bg-popover p-2 shadow-lg">
+            {suggestions.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => pick(p)}
+                disabled={p.stock < 1}
+                className="flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-left transition hover:bg-muted/70 disabled:opacity-40"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">{p.name}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {[p.category, p.size, p.color].filter(Boolean).join(" · ")}
+                  </p>
                 </div>
-                <div className="mt-3 flex items-center justify-between gap-2"><span className="text-lg font-semibold tracking-tight">{money(p.price)}</span><Badge variant={p.stock <= 5 ? "destructive" : "secondary"} className="rounded-full">{p.stock}</Badge></div>
-              </div>
-            </button>
-          ))}
-          {!products.length && (
-            <p className="col-span-full text-sm text-muted-foreground">
-              Сначала добавьте товары, затем сканируйте их штрихкоды на кассе.
-            </p>
-          )}
-        </div>
+                <span className="tabular-nums font-semibold">{money(p.price)}</span>
+                <Badge variant={p.stock <= 5 ? "destructive" : "secondary"} className="rounded-full">
+                  {p.stock}
+                </Badge>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {!!query && !isBarcode && !suggestions.length && (
+          <div className="absolute inset-x-0 top-[4.5rem] z-30 rounded-[var(--radius)] border bg-popover px-4 py-3 text-sm text-muted-foreground shadow-lg">
+            Ничего не найдено.
+          </div>
+        )}
       </div>
 
-      <Card className="h-fit lg:sticky lg:top-24">
-        <CardContent className="space-y-5 p-5 sm:p-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 font-semibold"><ShoppingBag className="size-4" /> Текущая продажа</div>
-            <span className="text-sm text-muted-foreground">Позиций: {cart.reduce((n, line) => n + line.qty, 0)}</span>
+      {message && (
+        <p className="rounded-2xl bg-accent px-4 py-3 text-sm font-medium text-accent-foreground">
+          {message}
+        </p>
+      )}
+
+      <div className="overflow-hidden rounded-[var(--radius)] border bg-card shadow-sm">
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <div className="flex items-center gap-2 font-semibold">
+            <ShoppingBag className="size-4 text-primary" /> Текущая продажа
           </div>
-          {!cart.length && (
-            <div className="rounded-2xl border border-dashed p-8 text-center"><ShoppingBag className="mx-auto mb-3 size-6 text-muted-foreground" /><p className="text-sm font-medium">Корзина пуста</p><p className="mt-1 text-xs text-muted-foreground">Отсканируйте или выберите товар.</p></div>
-          )}
-          <div className="space-y-3">
+          <span className="text-sm text-muted-foreground">Товаров: {units}</span>
+        </div>
+
+        {!cart.length ? (
+          <div className="px-5 py-14 text-center">
+            <div className="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-muted text-muted-foreground">
+              <ScanBarcode className="size-5" />
+            </div>
+            <p className="font-medium">Корзина пуста</p>
+            <p className="mx-auto mt-1 max-w-xs text-sm text-muted-foreground">
+              Отсканируйте этикетку — товар добавится сразу. Название можно набрать вручную.
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y">
             {cart.map((line) => (
-              <div key={line.key} className="rounded-2xl bg-muted/65 p-3.5">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="font-medium">{line.product.name}</div>
-                    <div className="text-xs text-muted-foreground">{[line.product.size, line.product.color].filter(Boolean).join(" · ") || line.product.category}</div>
-                  </div>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    aria-label={`Убрать товар ${line.product.name}`}
-                    onClick={() => setCart((prev) => prev.filter((l) => l.key !== line.key))}
-                  >
-                    <Trash2 />
-                  </Button>
+              <div key={line.key} className="flex flex-wrap items-center gap-x-4 gap-y-3 px-5 py-4">
+                <div className="min-w-[8rem] flex-1">
+                  <p className="font-medium">{line.product.name}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {[line.product.size, line.product.color].filter(Boolean).join(" · ") ||
+                      line.product.category}
+                  </p>
                 </div>
+
                 <button
                   type="button"
                   onClick={() => openEdit(line)}
-                  className="mt-2 flex w-full items-center gap-2 rounded-lg px-1 py-1 text-left text-xs text-muted-foreground transition hover:bg-card"
+                  className="w-36 rounded-lg px-2 py-1 text-right text-sm text-muted-foreground transition hover:bg-muted"
                   aria-label={`Изменить цену товара ${line.product.name}`}
                 >
-                  <Pencil className="size-3" />
-                  <span>Цена: {money(line.unitPrice)}</span>
+                  <span className="flex items-center justify-end gap-1.5 tabular-nums">
+                    <Pencil className="size-3" />
+                    {money(line.unitPrice)}
+                  </span>
                   {line.unitPrice !== line.product.price && (
-                    <Badge variant="secondary" className="rounded-full">
-                      {line.unitPrice < line.product.price ? "скидка" : "наценка"} {money(Math.abs(line.unitPrice - line.product.price))}
-                    </Badge>
+                    <span className="block text-[11px] text-primary">
+                      {line.unitPrice < line.product.price ? "скидка" : "наценка"}{" "}
+                      {money(Math.abs(line.unitPrice - line.product.price))}
+                    </span>
                   )}
                 </button>
-                <div className="mt-2 flex items-center justify-between">
-                  <div className="flex items-center gap-1">
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      aria-label={`Уменьшить количество товара ${line.product.name}`}
-                      onClick={() => setQty(line.key, line.qty - 1)}
-                    >
-                      <Minus />
-                    </Button>
-                    <Input
-                      className="h-9 w-16 text-center"
-                      type="number"
-                      min={1}
-                      max={line.product.stock}
-                      value={line.qty}
-                      onChange={(e) => setQty(line.key, Number(e.target.value))}
-                    />
-                    <Button
-                      size="icon"
-                      variant="outline"
-                      aria-label={`Увеличить количество товара ${line.product.name}`}
-                      onClick={() => setQty(line.key, line.qty + 1)}
-                    >
-                      <Plus />
-                    </Button>
-                  </div>
-                  <div className="font-medium">{money(line.unitPrice * line.qty)}</div>
+
+                <div className="flex items-center gap-1">
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    aria-label={`Уменьшить количество товара ${line.product.name}`}
+                    onClick={() => setQty(line.key, line.qty - 1)}
+                  >
+                    <Minus />
+                  </Button>
+                  <Input
+                    className="h-9 w-14 text-center tabular-nums"
+                    type="number"
+                    min={1}
+                    max={line.product.stock}
+                    value={line.qty}
+                    onChange={(e) => setQty(line.key, Number(e.target.value))}
+                  />
+                  <Button
+                    size="icon"
+                    variant="outline"
+                    aria-label={`Увеличить количество товара ${line.product.name}`}
+                    onClick={() => setQty(line.key, line.qty + 1)}
+                  >
+                    <Plus />
+                  </Button>
                 </div>
+
+                <div className="w-24 text-right font-semibold tabular-nums">
+                  {money(line.unitPrice * line.qty)}
+                </div>
+
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  aria-label={`Убрать товар ${line.product.name}`}
+                  onClick={() => setCart((prev) => prev.filter((l) => l.key !== line.key))}
+                >
+                  <Trash2 />
+                </Button>
               </div>
             ))}
           </div>
-          <div className="flex items-end justify-between border-t pt-4">
-            <span>Итого</span>
-            <span className="text-3xl font-semibold tracking-[-0.04em]">{money(total)}</span>
+        )}
+
+        <div className="flex flex-wrap items-center justify-between gap-4 border-t bg-muted/40 px-5 py-4">
+          <div>
+            <p className="text-sm text-muted-foreground">Итого</p>
+            <p className="text-3xl font-semibold tabular-nums tracking-[-0.04em]">{money(total)}</p>
           </div>
-          <Button className="w-full" size="lg" disabled={!cart.length || busy} onClick={checkout}>
+          <Button size="lg" disabled={!cart.length || busy} onClick={checkout}>
             {busy ? "Оформляем…" : "Оформить продажу"} <ArrowRight />
           </Button>
-        </CardContent>
-      </Card>
+        </div>
       </div>
 
       <Dialog open={!!dialog} onOpenChange={(open) => { if (!open) setDialog(null); }}>
@@ -323,7 +354,9 @@ export function SellPage({
               <DialogHeader>
                 <DialogTitle>{dialog.product.name}</DialogTitle>
                 <DialogDescription>
-                  {[dialog.product.category, dialog.product.size, dialog.product.color].filter(Boolean).join(" · ")}
+                  {[dialog.product.category, dialog.product.size, dialog.product.color]
+                    .filter(Boolean)
+                    .join(" · ")}
                   {" · "}Цена продажи {money(dialog.product.price)}
                 </DialogDescription>
               </DialogHeader>
@@ -359,7 +392,7 @@ export function SellPage({
                     ? `${dialogPrice < dialog.product.price ? "Скидка" : "Наценка"} ${money(Math.abs(dialogPrice - dialog.product.price))}`
                     : "Цена по прайсу"}
                 </span>
-                <span className="font-semibold">
+                <span className="font-semibold tabular-nums">
                   {money(dialogPrice !== null && dialogQty > 0 ? dialogPrice * dialogQty : 0)}
                 </span>
               </div>
