@@ -1,4 +1,11 @@
-import { db, withTransaction, type Client, type ClientLedgerEntry, type Product } from "./db";
+import {
+  db,
+  withTransaction,
+  type Client,
+  type ClientLedgerEntry,
+  type Expense,
+  type Product,
+} from "./db";
 import bwipjs from "bwip-js/node";
 import {
   authConfigError,
@@ -572,6 +579,54 @@ export async function handle(req: Request): Promise<Response> {
       await tx.query("DELETE FROM sale_items WHERE sale_id = ?").run(id);
       await tx.query("DELETE FROM sales WHERE id = ?").run(id);
     });
+    return json({ ok: true });
+  }
+
+  // Баланс кассы: приход — суммы продаж, расход — записанные траты.
+  // Значение нигде не хранится, оно всегда считается заново.
+  if (method === "GET" && pathname === "/api/balance") {
+    const income = (await db
+      .query("SELECT COALESCE(SUM(total), 0) AS value FROM sales")
+      .get()) as { value: number };
+    const spent = (await db
+      .query("SELECT COALESCE(SUM(amount), 0) AS value FROM expenses")
+      .get()) as { value: number };
+    const entries = await db
+      .query(
+        `SELECT kind, id, amount, note, created_at FROM (
+           SELECT 'sale' AS kind, id, total AS amount, '' AS note, created_at FROM sales
+           UNION ALL
+           SELECT 'expense' AS kind, id, amount, note, created_at FROM expenses
+         )
+         ORDER BY created_at DESC, kind, id DESC
+         LIMIT 50`,
+      )
+      .all();
+    return json({
+      balance: income.value - spent.value,
+      income: income.value,
+      spent: spent.value,
+      entries,
+    });
+  }
+
+  if (method === "POST" && pathname === "/api/expenses") {
+    const body = await parseBody<{ amount?: number; note?: string }>(req);
+    const amount = parseMinor(body.amount);
+    const note = trimmed(body.note);
+    if (amount === null || amount <= 0) return error("Укажите сумму больше нуля");
+    // Комментарий обязателен: расход без пояснения нельзя разобрать потом.
+    if (!note) return error("Напишите, на что потрачены деньги");
+    const expense = (await db
+      .query("INSERT INTO expenses (amount, note) VALUES (?, ?) RETURNING *")
+      .get(amount, note)) as Expense;
+    return json(expense, 201);
+  }
+
+  if (method === "DELETE" && pathname.match(/^\/api\/expenses\/\d+$/)) {
+    const id = Number(pathname.split("/").at(-1));
+    const info = await db.query("DELETE FROM expenses WHERE id = ?").run(id);
+    if (info.changes === 0) return error("Расход не найден", 404);
     return json({ ok: true });
   }
 
