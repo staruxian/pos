@@ -1,7 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Minus, Pencil, Plus, ScanBarcode, ShoppingBag, Trash2 } from "lucide-react";
-import { api, type Product } from "@/lib/api";
-import { fromMinor, money, toMinor } from "@/lib/utils";
+import {
+  ArrowRight,
+  Banknote,
+  CreditCard,
+  HandCoins,
+  Minus,
+  Pencil,
+  Plus,
+  ScanBarcode,
+  Search,
+  ShoppingBag,
+  Trash2,
+  UserRound,
+} from "lucide-react";
+import { api, type Client, type PaymentMethod, type Product } from "@/lib/api";
+import { cn, fromMinor, money, toMinor } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -40,6 +53,16 @@ export function SellPage({
   const [busy, setBusy] = useState(false);
   const [dialog, setDialog] = useState<PriceDialog | null>(null);
   const [dialogError, setDialogError] = useState<string | null>(null);
+
+  // Оплата: продажа оформляется только после выбора способа.
+  const [payOpen, setPayOpen] = useState(false);
+  const [method, setMethod] = useState<PaymentMethod>("cash");
+  const [clients, setClients] = useState<Client[] | null>(null);
+  const [clientQuery, setClientQuery] = useState("");
+  const [clientId, setClientId] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [newClient, setNewClient] = useState({ name: "", number: "" });
+  const [payError, setPayError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const nextKey = useRef(0);
 
@@ -159,24 +182,73 @@ export function SellPage({
   const total = useMemo(() => cart.reduce((sum, l) => sum + l.unitPrice * l.qty, 0), [cart]);
   const units = cart.reduce((n, line) => n + line.qty, 0);
 
+  function openPayment() {
+    if (!cart.length) return;
+    setMethod("cash");
+    setClientId(null);
+    setClientQuery("");
+    setCreating(false);
+    setNewClient({ name: "", number: "" });
+    setPayError(null);
+    setPayOpen(true);
+    if (clients === null) void api.clients().then(setClients).catch(() => setClients([]));
+  }
+
+  async function addClient() {
+    const name = newClient.name.trim();
+    const number = newClient.number.trim();
+    if (!name) return setPayError("Укажите имя клиента");
+    if (!number) return setPayError("Укажите номер клиента");
+    setBusy(true);
+    setPayError(null);
+    try {
+      const client = await api.createClient({ name, number });
+      setClients((prev) => [...(prev ?? []), client]);
+      setClientId(client.id);
+      setCreating(false);
+      setNewClient({ name: "", number: "" });
+    } catch (err) {
+      setPayError(err instanceof Error ? err.message : "Не удалось добавить клиента");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function checkout() {
     if (!cart.length) return;
+    if (method === "debt" && clientId === null) return setPayError("Выберите клиента");
     setBusy(true);
-    setMessage(null);
+    setPayError(null);
     try {
-      const sale = await api.checkout(
-        cart.map((l) => ({ product_id: l.product.id, qty: l.qty, unit_price: l.unitPrice })),
-      );
+      const sale = await api.checkout({
+        items: cart.map((l) => ({ product_id: l.product.id, qty: l.qty, unit_price: l.unitPrice })),
+        payment_method: method,
+        client_id: method === "debt" ? clientId! : undefined,
+      });
       setCart([]);
-      setMessage(`Продажа №${sale.id} оформлена · ${money(sale.total)}`);
+      setPayOpen(false);
+      setMessage(
+        `Продажа №${sale.id} на ${money(sale.total)} · ${
+          method === "cash" ? "наличные" : method === "card" ? "карта" : "в долг"
+        }`,
+      );
       onSold();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Не удалось оформить продажу");
+      setPayError(err instanceof Error ? err.message : "Не удалось оформить продажу");
     } finally {
       setBusy(false);
       inputRef.current?.focus();
     }
   }
+
+  const matchingClients = useMemo(() => {
+    const value = clientQuery.trim().toLowerCase();
+    const all = clients ?? [];
+    return (value
+      ? all.filter((c) => c.name.toLowerCase().includes(value) || c.number.toLowerCase().includes(value))
+      : all
+    ).slice(0, 20);
+  }, [clients, clientQuery]);
 
   const dialogPrice = dialog ? toMinor(dialog.price) : null;
   const dialogQty = dialog ? Number(dialog.qty) : 0;
@@ -341,11 +413,157 @@ export function SellPage({
             <p className="text-sm text-muted-foreground">Итого</p>
             <p className="text-3xl font-semibold tabular-nums tracking-[-0.04em]">{money(total)}</p>
           </div>
-          <Button size="lg" disabled={!cart.length || busy} onClick={checkout}>
-            {busy ? "Оформляем…" : "Оформить продажу"} <ArrowRight />
+          <Button size="lg" disabled={!cart.length} onClick={openPayment}>
+            Оформить продажу <ArrowRight />
           </Button>
         </div>
       </div>
+
+      <Dialog open={payOpen} onOpenChange={(open) => { if (!open) setPayOpen(false); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Как платит покупатель?</DialogTitle>
+            <DialogDescription>
+              К оплате {money(total)} за {units} шт. Продажа оформится после выбора.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid grid-cols-3 gap-2">
+            {([
+              { value: "cash", label: "Наличные", icon: Banknote },
+              { value: "card", label: "Карта", icon: CreditCard },
+              { value: "debt", label: "В долг", icon: HandCoins },
+            ] as const).map((option) => {
+              const Icon = option.icon;
+              const active = method === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => {
+                    setMethod(option.value);
+                    setPayError(null);
+                  }}
+                  className={cn(
+                    "flex flex-col items-center gap-2 rounded-2xl border p-4 text-sm font-semibold transition",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    active
+                      ? "border-primary bg-primary/5 text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <Icon className={cn("size-5", active && "text-primary")} />
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {method === "debt" && (
+            <div className="grid gap-2 rounded-2xl bg-muted/50 p-3">
+              {creating ? (
+                <>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="new-client-name">Имя клиента</Label>
+                    <Input
+                      id="new-client-name"
+                      value={newClient.name}
+                      autoFocus
+                      placeholder="Например, Анна"
+                      onChange={(e) => setNewClient({ ...newClient, name: e.target.value })}
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="new-client-number">Номер клиента</Label>
+                    <Input
+                      id="new-client-number"
+                      type="tel"
+                      value={newClient.number}
+                      placeholder="+998 90 123 45 67"
+                      onChange={(e) => setNewClient({ ...newClient, number: e.target.value })}
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" className="flex-1" onClick={() => setCreating(false)}>
+                      Назад к списку
+                    </Button>
+                    <Button type="button" className="flex-1" disabled={busy} onClick={() => void addClient()}>
+                      Добавить клиента
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      value={clientQuery}
+                      onChange={(e) => setClientQuery(e.target.value)}
+                      placeholder="Имя или номер клиента"
+                      className="pl-10"
+                    />
+                  </div>
+                  <div className="max-h-52 overflow-y-auto">
+                    {clients === null && <p className="p-3 text-sm text-muted-foreground">Загружаем клиентов…</p>}
+                    {clients?.length === 0 && (
+                      <p className="p-3 text-sm text-muted-foreground">Клиентов пока нет — добавьте первого.</p>
+                    )}
+                    {matchingClients.map((client) => (
+                      <button
+                        key={client.id}
+                        type="button"
+                        onClick={() => {
+                          setClientId(client.id);
+                          setPayError(null);
+                        }}
+                        className={cn(
+                          "flex w-full items-center gap-3 rounded-xl p-2.5 text-left transition",
+                          clientId === client.id ? "bg-card shadow-xs" : "hover:bg-card/70",
+                        )}
+                      >
+                        <div className="grid size-8 shrink-0 place-items-center rounded-full bg-primary/10 text-primary">
+                          <UserRound className="size-4" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium">{client.name}</p>
+                          <p className="truncate text-xs text-muted-foreground">{client.number}</p>
+                        </div>
+                        {client.balance > 0 && (
+                          <span className="text-xs tabular-nums text-destructive">
+                            долг {money(client.balance)}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                    {!!clients?.length && !matchingClients.length && (
+                      <p className="p-3 text-sm text-muted-foreground">Никого не нашли.</p>
+                    )}
+                  </div>
+                  <Button type="button" variant="outline" onClick={() => { setCreating(true); setPayError(null); }}>
+                    <Plus /> Новый клиент
+                  </Button>
+                </>
+              )}
+            </div>
+          )}
+
+          {payError && <p className="text-sm text-destructive">{payError}</p>}
+
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" className="flex-1" onClick={() => setPayOpen(false)}>
+              Отмена
+            </Button>
+            <Button
+              type="button"
+              className="flex-1"
+              disabled={busy || creating || (method === "debt" && clientId === null)}
+              onClick={() => void checkout()}
+            >
+              {busy ? "Оформляем…" : method === "debt" ? "Записать в долг" : "Продать"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!dialog} onOpenChange={(open) => { if (!open) setDialog(null); }}>
         <DialogContent className="max-w-sm">

@@ -48,6 +48,12 @@ export type SaleDetails = {
   items: SaleItem[];
 };
 
+/** Где лежат деньги: в ящике или на карте. */
+export type Account = "cash" | "card";
+
+/** Чем расплатились: наличными, картой или взяли в долг. */
+export type PaymentMethod = "cash" | "card" | "debt";
+
 export type Expense = {
   id: number;
   /** Сумма в тийинах (1/100 сума). */
@@ -55,21 +61,36 @@ export type Expense = {
   note: string;
   /** `expense` — трата магазина, `withdrawal` — деньги забрали из кассы. */
   kind: "expense" | "withdrawal";
+  /** С какого баланса списано. */
+  account: Account;
+  created_at: string;
+};
+
+export type SaleSummary = {
+  id: number;
+  total: number;
+  payment_method: PaymentMethod;
+  client_id: number | null;
   created_at: string;
 };
 
 export type Balance = {
-  balance: number;
-  income: number;
+  /** Наличные: продажи за нал и погашения долгов минус списания. */
+  cash: { balance: number; income: number; payments: number; spent: number; withdrawn: number };
+  /** Карта: продажи по карте минус списания с карты. */
+  card: { balance: number; income: number; spent: number; withdrawn: number };
+  /** Оба баланса вместе. */
+  total: number;
+  /** Продано в долг и ещё не оплачено. */
+  debt: number;
   spent: number;
-  /** Деньги, вынутые из кассы: уменьшают баланс, но не прибыль. */
   withdrawn: number;
   /** Реализованная маржа: продано минус закупка проданного. */
   margin: number;
   /** Чистая прибыль: реализованная маржа минус расходы. */
   profit: number;
-  /** Последние 50 продаж — приход в кассу. */
-  sales: { id: number; total: number; created_at: string }[];
+  /** Последние 50 продаж. */
+  sales: SaleSummary[];
   /** Последние 50 расходов. */
   expenses: Expense[];
   /** Последние 50 изъятий. */
@@ -159,11 +180,15 @@ export const api = {
     }).then((r) => parse<Product>(r)),
   deleteProduct: (id: number) =>
     fetch(`/api/products/${id}`, { method: "DELETE" }).then((r) => parse<{ ok: boolean }>(r)),
-  checkout: (items: { product_id: number; qty: number; unit_price: number }[]) =>
+  checkout: (body: {
+    items: { product_id: number; qty: number; unit_price: number }[];
+    payment_method: PaymentMethod;
+    client_id?: number;
+  }) =>
     fetch("/api/sales", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ items }),
+      body: JSON.stringify(body),
     }).then((r) => parse<{ id: number; total: number }>(r)),
   sale: (id: number) => fetch(`/api/sales/${id}`).then((r) => parse<SaleDetails>(r)),
   /** Меняется только цена продажи позиций — состав и количество неизменны. */
@@ -176,7 +201,12 @@ export const api = {
   deleteSale: (id: number) =>
     fetch(`/api/sales/${id}`, { method: "DELETE" }).then((r) => parse<{ ok: boolean }>(r)),
   balance: () => fetch("/api/balance").then((r) => parse<Balance>(r)),
-  createExpense: (body: { amount: number; note: string; kind: "expense" | "withdrawal" }) =>
+  createExpense: (body: {
+    amount: number;
+    note: string;
+    kind: "expense" | "withdrawal";
+    account: Account;
+  }) =>
     fetch("/api/expenses", {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -33,7 +33,10 @@ const schema = [
   `CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
-    total INTEGER NOT NULL
+    total INTEGER NOT NULL,
+    payment_method TEXT NOT NULL DEFAULT 'cash'
+      CHECK (payment_method IN ('cash', 'card', 'debt')),
+    client_id INTEGER REFERENCES clients(id)
   )`,
   `CREATE TABLE IF NOT EXISTS sale_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,6 +60,7 @@ const schema = [
     kind TEXT NOT NULL CHECK (kind IN ('debt', 'payment')),
     amount INTEGER NOT NULL CHECK (amount > 0),
     note TEXT NOT NULL DEFAULT '',
+    sale_id INTEGER REFERENCES sales(id),
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_client_ledger_client_id
@@ -66,6 +70,7 @@ const schema = [
     amount INTEGER NOT NULL CHECK (amount > 0),
     note TEXT NOT NULL,
     kind TEXT NOT NULL DEFAULT 'expense' CHECK (kind IN ('expense', 'withdrawal')),
+    account TEXT NOT NULL DEFAULT 'cash' CHECK (account IN ('cash', 'card')),
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
   )`,
   `CREATE INDEX IF NOT EXISTS idx_expenses_created_at ON expenses(created_at DESC)`,
@@ -89,9 +94,18 @@ async function initializeDatabase() {
   await addMissingColumns("sale_items", [
     ["cost_price", "ALTER TABLE sale_items ADD COLUMN cost_price INTEGER NOT NULL DEFAULT 0"],
   ]);
-  // Записи, созданные до появления изъятий, — обычные расходы.
+  // Записи, созданные до появления изъятий, — обычные расходы из наличных.
   await addMissingColumns("expenses", [
     ["kind", "ALTER TABLE expenses ADD COLUMN kind TEXT NOT NULL DEFAULT 'expense'"],
+    ["account", "ALTER TABLE expenses ADD COLUMN account TEXT NOT NULL DEFAULT 'cash'"],
+  ]);
+  // Продажи, оформленные до выбора способа оплаты, считаем наличными.
+  await addMissingColumns("sales", [
+    ["payment_method", "ALTER TABLE sales ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'cash'"],
+    ["client_id", "ALTER TABLE sales ADD COLUMN client_id INTEGER"],
+  ]);
+  await addMissingColumns("client_ledger", [
+    ["sale_id", "ALTER TABLE client_ledger ADD COLUMN sale_id INTEGER"],
   ]);
 
   await client.batch(
@@ -236,7 +250,19 @@ export type Expense = {
   note: string;
   /** `expense` — трата магазина, `withdrawal` — деньги забрали из кассы. */
   kind: "expense" | "withdrawal";
+  /** С какого баланса списано: наличные или карта. */
+  account: "cash" | "card";
   created_at: string;
+};
+
+export type Sale = {
+  id: number;
+  created_at: string;
+  /** Сумма в тийинах (1/100 сума), целое число. */
+  total: number;
+  /** `debt` — товар отдан в долг, деньги в кассу не пришли. */
+  payment_method: "cash" | "card" | "debt";
+  client_id: number | null;
 };
 
 export type Client = {
@@ -253,5 +279,7 @@ export type ClientLedgerEntry = {
   /** Сумма в тийинах (1/100 сума), целое число. */
   amount: number;
   note: string;
+  /** Продажа, породившая запись, — у долга из кассы. */
+  sale_id: number | null;
   created_at: string;
 };
