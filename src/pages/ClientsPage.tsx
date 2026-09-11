@@ -29,6 +29,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 
 type ClientForm = { name: string; number: string };
 type Operation = "debt" | "payment";
@@ -60,6 +61,9 @@ export function ClientsPage() {
   const [note, setNote] = useState("");
   const [operationError, setOperationError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [removing, setRemoving] = useState<Client | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const loadClients = useCallback(async () => {
     try {
@@ -149,15 +153,20 @@ export function ClientsPage() {
     }
   }
 
-  async function removeClient(client: Client) {
-    if (!confirm(`Удалить клиента «${client.name}»?`)) return;
+  async function removeClient() {
+    if (!removing) return;
+    setRemoveBusy(true);
+    setRemoveError(null);
     try {
-      await api.deleteClient(client.id);
+      await api.deleteClient(removing.id);
+      setRemoving(null);
       setSelectedId(null);
       setDetails(null);
       await loadClients();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Не удалось удалить клиента");
+      setRemoveError(err instanceof Error ? err.message : "Не удалось удалить клиента");
+    } finally {
+      setRemoveBusy(false);
     }
   }
 
@@ -239,7 +248,7 @@ export function ClientsPage() {
             <>
               <div className="flex flex-wrap items-start justify-between gap-4 border-b p-5 sm:p-6">
                 <div><div className="flex items-center gap-2"><h3 className="text-xl font-semibold">{details.name}</h3>{details.balance > 0 && <Badge variant="destructive" className="rounded-full">Есть долг</Badge>}</div><p className="mt-1 flex items-center gap-1.5 text-sm text-muted-foreground"><Phone className="size-3.5" />{details.number}</p></div>
-                <div className="flex gap-1"><Button size="icon" variant="ghost" title="Редактировать" aria-label="Редактировать клиента" onClick={() => startEdit(details)}><Pencil /></Button><Button size="icon" variant="ghost" title="Удалить" aria-label="Удалить клиента" onClick={() => void removeClient(details)}><Trash2 /></Button></div>
+                <div className="flex gap-1"><Button size="icon" variant="ghost" title="Редактировать" aria-label="Редактировать клиента" onClick={() => startEdit(details)}><Pencil /></Button><Button size="icon" variant="ghost" title="Удалить" aria-label="Удалить клиента" onClick={() => { setRemoveError(null); setRemoving(details); }}><Trash2 /></Button></div>
               </div>
               <div className="grid gap-5 p-5 sm:p-6">
                 <div className="flex flex-col gap-4 rounded-[var(--radius)] bg-muted/60 p-5 sm:flex-row sm:items-center sm:justify-between">
@@ -267,6 +276,17 @@ export function ClientsPage() {
           )}
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={!!removing}
+        onOpenChange={(value) => { if (!value) setRemoving(null); }}
+        title={`Удалить клиента «${removing?.name ?? ""}»?`}
+        description="Карточка исчезнет из списка. Клиента с историей долга удалить нельзя."
+        confirmLabel="Удалить клиента"
+        busy={removeBusy}
+        error={removeError}
+        onConfirm={() => void removeClient()}
+      />
 
       <Dialog open={clientDialog} onOpenChange={setClientDialog}>
         <DialogContent>
