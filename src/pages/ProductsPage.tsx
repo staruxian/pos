@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -45,6 +46,9 @@ export function ProductsPage({
   const [printing, setPrinting] = useState(false);
   const [printResult, setPrintResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [query, setQuery] = useState("");
+  const [removing, setRemoving] = useState<Product | null>(null);
+  const [removeBusy, setRemoveBusy] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -149,13 +153,18 @@ export function ProductsPage({
     }
   }
 
-  async function remove(p: Product) {
-    if (!confirm(`Удалить товар «${p.name}»?`)) return;
+  async function remove() {
+    if (!removing) return;
+    setRemoveBusy(true);
+    setRemoveError(null);
     try {
-      await api.deleteProduct(p.id);
+      await api.deleteProduct(removing.id);
+      setRemoving(null);
       onChange();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Не удалось удалить товар");
+      setRemoveError(err instanceof Error ? err.message : "Не удалось удалить товар");
+    } finally {
+      setRemoveBusy(false);
     }
   }
 
@@ -270,7 +279,16 @@ export function ProductsPage({
                   <Button size="icon" variant="ghost" onClick={() => startEdit(p)} title="Редактировать" aria-label={`Редактировать товар ${p.name}`}>
                     <Pencil />
                   </Button>
-                  <Button size="icon" variant="ghost" onClick={() => remove(p)} title="Удалить" aria-label={`Удалить товар ${p.name}`}>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => {
+                      setRemoveError(null);
+                      setRemoving(p);
+                    }}
+                    title="Удалить"
+                    aria-label={`Удалить товар ${p.name}`}
+                  >
                     <Trash2 />
                   </Button>
                 </TableCell>
@@ -292,6 +310,17 @@ export function ProductsPage({
           </TableBody>
         </Table>
       </div>
+
+      <ConfirmDialog
+        open={!!removing}
+        onOpenChange={(value) => { if (!value) setRemoving(null); }}
+        title={`Удалить товар «${removing?.name ?? ""}»?`}
+        description="Позиция исчезнет из каталога. Товар, который уже продавался, удалить нельзя."
+        confirmLabel="Удалить товар"
+        busy={removeBusy}
+        error={removeError}
+        onConfirm={() => void remove()}
+      />
 
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>

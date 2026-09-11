@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { PageHeader } from "@/components/page-header";
 import { StatCard } from "@/components/stat-card";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import {
   Dialog,
   DialogContent,
@@ -62,6 +63,8 @@ export function ReportsPage({ onChange }: { onChange?: () => void }) {
   const [prices, setPrices] = useState<Record<number, string>>({});
   const [saleError, setSaleError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [removing, setRemoving] = useState<{ id: number; total: number } | null>(null);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   async function load(nextFrom = from, nextTo = to) {
     setError(null);
@@ -111,14 +114,19 @@ export function ReportsPage({ onChange }: { onChange?: () => void }) {
     }
   }
 
-  async function removeSale(id: number) {
-    if (!confirm(`Отменить продажу №${id}? Товары вернутся на склад.`)) return;
+  async function removeSale() {
+    if (!removing) return;
+    setBusy(true);
+    setRemoveError(null);
     try {
-      await api.deleteSale(id);
+      await api.deleteSale(removing.id);
+      setRemoving(null);
       await load();
       onChange?.();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Не удалось отменить продажу");
+      setRemoveError(err instanceof Error ? err.message : "Не удалось отменить продажу");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -268,7 +276,10 @@ export function ReportsPage({ onChange }: { onChange?: () => void }) {
                             variant="ghost"
                             title="Отменить продажу"
                             aria-label={`Отменить продажу №${s.id}`}
-                            onClick={() => void removeSale(s.id)}
+                            onClick={() => {
+                              setRemoveError(null);
+                              setRemoving({ id: s.id, total: s.total });
+                            }}
                           >
                             <Trash2 />
                           </Button>
@@ -306,6 +317,17 @@ export function ReportsPage({ onChange }: { onChange?: () => void }) {
           </div>
         </>
       )}
+
+      <ConfirmDialog
+        open={!!removing}
+        onOpenChange={(open) => { if (!open) setRemoving(null); }}
+        title={`Отменить продажу №${removing?.id ?? ""}?`}
+        description={`Продажа на ${money(removing?.total ?? 0)} будет удалена, а товары вернутся на склад. Отменить это действие нельзя.`}
+        confirmLabel="Отменить продажу"
+        busy={busy}
+        error={removeError}
+        onConfirm={() => void removeSale()}
+      />
 
       <Dialog open={!!editing} onOpenChange={(open) => { if (!open) setEditing(null); }}>
         <DialogContent>
