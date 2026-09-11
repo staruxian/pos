@@ -4,11 +4,10 @@ import {
   ArrowUpRight,
   Banknote,
   Minus,
-  Plus,
   Trash2,
   Wallet,
 } from "lucide-react";
-import { api, type Balance, type BalanceEntry } from "@/lib/api";
+import { api, type Balance, type Expense } from "@/lib/api";
 import { money, toMinor } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,7 +42,7 @@ export function BalancePage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const [removing, setRemoving] = useState<BalanceEntry | null>(null);
+  const [removing, setRemoving] = useState<Expense | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
 
@@ -128,73 +127,86 @@ export function BalancePage() {
             <StatCard label="Расходы" value={money(data.spent)} icon={ArrowUpRight} tone="debt" />
           </div>
 
-          <div className="overflow-hidden rounded-[var(--radius)] border bg-card shadow-sm">
-            <div className="flex items-center justify-between border-b px-5 py-4">
-              <span className="font-semibold">Движение денег</span>
-              <span className="text-xs text-muted-foreground">Последние 50 операций</span>
-            </div>
-
-            {!data.entries.length ? (
-              <div className="px-5 py-14 text-center">
-                <div className="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-muted text-muted-foreground">
-                  <Wallet className="size-5" />
-                </div>
-                <p className="font-medium">Движений пока нет</p>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Оформите продажу на Кассе или запишите первый расход.
-                </p>
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="h-fit overflow-hidden rounded-[var(--radius)] border bg-card shadow-sm">
+              <div className="flex items-center justify-between border-b px-5 py-4">
+                <span className="font-semibold">Приход с продаж</span>
+                <span className="text-xs text-muted-foreground">Последние 50</span>
               </div>
-            ) : (
-              <div className="divide-y">
-                {data.entries.map((entry) => {
-                  const income = entry.kind === "sale";
-                  return (
-                    <div key={`${entry.kind}-${entry.id}`} className="flex items-center gap-3 px-5 py-3.5">
-                      <div
-                        className={`grid size-9 shrink-0 place-items-center rounded-full ${
-                          income ? "bg-emerald-500/10 text-emerald-600" : "bg-destructive/10 text-destructive"
-                        }`}
-                      >
-                        {income ? <ArrowDownLeft className="size-4" /> : <ArrowUpRight className="size-4" />}
+              {!data.sales.length ? (
+                <div className="px-5 py-12 text-center">
+                  <div className="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-muted text-muted-foreground">
+                    <ArrowDownLeft className="size-5" />
+                  </div>
+                  <p className="font-medium">Продаж пока нет</p>
+                  <p className="mt-1 text-sm text-muted-foreground">Оформите первую продажу на Кассе.</p>
+                </div>
+              ) : (
+                <div className="divide-y">
+                  {data.sales.map((sale) => (
+                    <div key={sale.id} className="flex items-center gap-3 px-5 py-3.5">
+                      <div className="grid size-9 shrink-0 place-items-center rounded-full bg-emerald-500/10 text-emerald-600">
+                        <ArrowDownLeft className="size-4" />
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="font-medium">
-                          {income ? `Продажа №${entry.id}` : entry.note}
-                        </p>
+                        <p className="font-medium">Продажа №{sale.id}</p>
                         <p className="truncate text-xs text-muted-foreground">
-                          {income ? "Приход в кассу" : "Расход"} · {operationTime(entry.created_at)}
+                          {operationTime(sale.created_at)}
                         </p>
                       </div>
-                      <p
-                        className={`font-semibold tabular-nums ${
-                          income ? "text-emerald-600" : "text-destructive"
-                        }`}
-                      >
-                        {income ? "+" : "−"}
-                        {money(entry.amount)}
-                      </p>
-                      {income ? (
-                        // Продажа правится и отменяется в Отчётах, здесь она только видна.
-                        <span className="w-9" />
-                      ) : (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          title="Удалить расход"
-                          aria-label={`Удалить расход ${entry.note}`}
-                          onClick={() => {
-                            setRemoveError(null);
-                            setRemoving(entry);
-                          }}
-                        >
-                          <Trash2 />
-                        </Button>
-                      )}
+                      <p className="font-semibold tabular-nums text-emerald-600">+{money(sale.total)}</p>
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="h-fit overflow-hidden rounded-[var(--radius)] border bg-card shadow-sm">
+              <div className="flex items-center justify-between border-b px-5 py-4">
+                <span className="font-semibold">Расходы</span>
+                <span className="text-xs text-muted-foreground">Последние 50</span>
               </div>
-            )}
+              {!data.expenses.length ? (
+                <div className="px-5 py-12 text-center">
+                  <div className="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-muted text-muted-foreground">
+                    <ArrowUpRight className="size-5" />
+                  </div>
+                  <p className="font-medium">Расходов пока нет</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Запишите трату — она уйдёт из баланса кассы.
+                  </p>
+                </div>
+              ) : (
+                <div className="divide-y">
+                  {data.expenses.map((expense) => (
+                    <div key={expense.id} className="flex items-center gap-3 px-5 py-3.5">
+                      <div className="grid size-9 shrink-0 place-items-center rounded-full bg-destructive/10 text-destructive">
+                        <ArrowUpRight className="size-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-medium">{expense.note}</p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {operationTime(expense.created_at)}
+                        </p>
+                      </div>
+                      <p className="font-semibold tabular-nums text-destructive">−{money(expense.amount)}</p>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        title="Удалить расход"
+                        aria-label={`Удалить расход ${expense.note}`}
+                        onClick={() => {
+                          setRemoveError(null);
+                          setRemoving(expense);
+                        }}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </>
       )}
