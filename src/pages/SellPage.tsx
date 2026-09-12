@@ -32,6 +32,14 @@ import {
 // свой ключ, а не id товара.
 type Line = { key: number; product: Product; qty: number; unitPrice: number };
 
+// Шаг 5% до половины цены: дальше кассир вводит цену руками.
+const DISCOUNTS = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50];
+
+/** Цена со скидкой всегда считается от прайса, иначе два нажатия подряд складывались бы. */
+function discounted(listPrice: number, percent: number) {
+  return Math.round((listPrice * (100 - percent)) / 100);
+}
+
 type PriceDialog = {
   mode: "add" | "edit";
   key?: number;
@@ -602,6 +610,38 @@ export function SellPage({
                     onChange={(e) => setDialog({ ...dialog, price: e.target.value })}
                     onFocus={(e) => e.target.select()}
                   />
+                </div>
+              </div>
+              <div className="grid gap-1.5">
+                <Label>Скидка от прайса</Label>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {DISCOUNTS.map((percent) => {
+                    const active = dialogPrice === discounted(dialog.product.price, percent);
+                    return (
+                      <button
+                        key={percent}
+                        type="button"
+                        // Повторное нажатие по выбранной скидке возвращает цену прайса.
+                        onClick={() =>
+                          setDialog({
+                            ...dialog,
+                            price: fromMinor(
+                              active ? dialog.product.price : discounted(dialog.product.price, percent),
+                            ),
+                          })
+                        }
+                        className={cn(
+                          "h-9 rounded-xl border text-sm font-semibold tabular-nums transition",
+                          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                          active
+                            ? "border-primary bg-primary/10 text-foreground"
+                            : "text-muted-foreground hover:text-foreground",
+                        )}
+                      >
+                        {percent}%
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
               <div className="flex items-center justify-between rounded-xl bg-muted/65 px-3 py-2 text-sm">
