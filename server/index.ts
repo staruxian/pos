@@ -9,7 +9,6 @@ import {
 } from "./db";
 import bwipjs from "bwip-js/node";
 import {
-  authConfigError,
   authEnabled,
   checkPassword,
   clearCookie,
@@ -114,23 +113,18 @@ export async function handle(req: Request): Promise<Response> {
   if (pathname === null) return error("Некорректный путь запроса");
   const method = req.method;
 
-  // Health отвечает всегда — по нему видно, включён ли вход и что настроено не так.
-  const configError = authConfigError();
-  const authOn = authEnabled();
+  // Health отвечает всегда — по нему видно, включён ли вход.
+  const authOn = await authEnabled();
   if (method === "GET" && pathname === "/api/health") {
-    if (configError) return json({ ok: false, error: configError }, 503);
     return json({ ok: true, auth: authOn ? "enabled" : "disabled" });
   }
-
-  // Настройка наполовину — закрываем всё: непонятно, хотели включить вход или нет.
-  if (configError) return error(`Сервер не настроен: ${configError}`, 503);
 
   if (method === "GET" && pathname === "/api/session") {
     return json({ authenticated: authOn ? await hasSession(req) : true, authRequired: authOn });
   }
 
   if (method === "POST" && pathname === "/api/login") {
-    if (!authOn) return error("Вход отключён: POS_PASSWORD не задан");
+    if (!authOn) return error("Вход отключён: пароль магазина не задан");
     const limit = rateLimit(`login:${clientIp(req)}`, 10, 15 * 60_000);
     if (!limit.allowed) {
       return json({ error: "Слишком много попыток входа. Подождите немного" }, 429, {
