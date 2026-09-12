@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Barcode, Boxes, Layers, Pencil, Plus, Search, Shirt, TrendingUp, Trash2, Wallet } from "lucide-react";
 import { api, type Product } from "@/lib/api";
 import { printLabel } from "@/lib/printer";
@@ -28,6 +28,23 @@ import {
 
 type Form = { name: string; price: string; cost: string; stock: string; sku: string; category: string; size: string; color: string };
 
+const MAX_COPIES = 50;
+const PRINT_INTERVAL_MS = 1000;
+const QUICK_COPIES = [1, 2, 5, 10];
+
+/** 1 этикетка, 2 этикетки, 5 этикеток. */
+function labels(n: number) {
+  const tens = n % 100;
+  if (tens > 10 && tens < 20) return "этикеток";
+  switch (n % 10) {
+    case 1: return "этикетка";
+    case 2:
+    case 3:
+    case 4: return "этикетки";
+    default: return "этикеток";
+  }
+}
+
 const empty: Form = { name: "", price: "", cost: "", stock: "", sku: "", category: "Верх", size: "", color: "" };
 const categories = ["Верх", "Низ", "Платья", "Верхняя одежда", "Обувь", "Аксессуары"];
 
@@ -43,8 +60,13 @@ export function ProductsPage({
   const [form, setForm] = useState<Form>(empty);
   const [barcodeProduct, setBarcodeProduct] = useState<Product | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [printing, setPrinting] = useState(false);
   const [printResult, setPrintResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [copiesStep, setCopiesStep] = useState(false);
+  const [copies, setCopies] = useState("1");
+  const [printed, setPrinted] = useState<{ done: number; total: number } | null>(null);
+  // Печать идёт пачкой с паузами, поэтому её нужно уметь прервать — закрытием
+  // диалога или кнопкой «Остановить».
+  const stopPrinting = useRef(false);
   const [query, setQuery] = useState("");
   const [removing, setRemoving] = useState<Product | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
@@ -143,18 +165,37 @@ export function ProductsPage({
   }
 
   async function sendToPrinter(p: Product) {
-    setPrinting(true);
+    const total = Number(copies);
+    if (!Number.isInteger(total) || total < 1 || total > MAX_COPIES) {
+      return setPrintResult({ ok: false, message: `Укажите количество от 1 до ${MAX_COPIES}` });
+    }
+    stopPrinting.current = false;
     setPrintResult(null);
+    setCopiesStep(false);
+    setPrinted({ done: 0, total });
+    let done = 0;
     try {
-      await printLabel({ data: p.sku, text: p.name });
-      setPrintResult({ ok: true, message: "Этикетка отправлена на принтер" });
+      for (let i = 0; i < total; i++) {
+        if (stopPrinting.current) break;
+        await printLabel({ data: p.sku, text: p.name });
+        done += 1;
+        setPrinted({ done, total });
+        // Мост печатает этикетки по одной: без паузы команды наезжают друг на друга.
+        if (i < total - 1) await new Promise((resolve) => setTimeout(resolve, PRINT_INTERVAL_MS));
+      }
+      setPrintResult(
+        stopPrinting.current
+          ? { ok: false, message: `Остановлено: напечатано ${done} из ${total}` }
+          : { ok: true, message: `Отправлено на принтер: ${done} ${labels(done)}` },
+      );
     } catch (err) {
+      const reason = err instanceof Error ? err.message : "Не удалось напечатать этикетку";
       setPrintResult({
         ok: false,
-        message: err instanceof Error ? err.message : "Не удалось напечатать этикетку",
+        message: done ? `Напечатано ${done} из ${total}. ${reason}` : reason,
       });
     } finally {
-      setPrinting(false);
+      setPrinted(null);
     }
   }
 
@@ -429,8 +470,11 @@ export function ProductsPage({
         open={!!barcodeProduct}
         onOpenChange={(v) => {
           if (!v) {
+            stopPrinting.current = true;
             setBarcodeProduct(null);
             setPrintResult(null);
+            setCopiesStep(false);
+            setPrinted(null);
           }
         }}
       >
@@ -450,11 +494,75 @@ export function ProductsPage({
                   />
                 </div>
                 <p className="font-mono text-sm text-muted-foreground">{barcodeProduct.sku}</p>
-                <Button className="w-full" disabled={printing} onClick={() => void sendToPrinter(barcodeProduct)}>
-                  {printing ? "Печать…" : "Печать этикетки"}
-                </Button>
+
+                {printed ? (
+                  <div className="grid w-full gap-2">
+                    <p className="text-center text-sm">
+                      Печатаем {printed.done} из {printed.total}…
+                    </p>
+                    <Button variant="outline" onClick={() => { stopPrinting.current = true; }}>
+                      Остановить
+                    </Button>
+                  </div>
+                ) : copiesStep ? (
+                  <div className="grid w-full gap-2">
+                    <Label htmlFor="copies">Сколько этикеток напечатать?</Label>
+                    <Input
+                      id="copies"
+                      type="number"
+                      min={1}
+                      max={MAX_COPIES}
+                      step={1}
+                      autoFocus
+                      value={copies}
+                      onChange={(e) => setCopies(e.target.value)}
+                      onFocus={(e) => e.target.select()}
+                    />
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {QUICK_COPIES.map((count) => (
+                        <button
+                          key={count}
+                          type="button"
+                          onClick={() => setCopies(String(count))}
+                          className={cn(
+                            "h-9 rounded-xl border text-sm font-semibold tabular-nums transition",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                            Number(copies) === count
+                              ? "border-primary bg-primary/10 text-foreground"
+                              : "text-muted-foreground hover:text-foreground",
+                          )}
+                        >
+                          {count}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="outline" className="flex-1" onClick={() => setCopiesStep(false)}>
+                        Назад
+                      </Button>
+                      <Button className="flex-1" onClick={() => void sendToPrinter(barcodeProduct)}>
+                        Печать
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Этикетки уходят по одной, с паузой в секунду.
+                    </p>
+                  </div>
+                ) : (
+                  <Button
+                    className="w-full"
+                    onClick={() => {
+                      setCopies("1");
+                      setPrintResult(null);
+                      setCopiesStep(true);
+                    }}
+                  >
+                    Печать этикетки
+                  </Button>
+                )}
+
                 {printResult && (
-                  <p className={cn("text-sm", printResult.ok ? "text-muted-foreground" : "text-destructive")}>
+                  <p className={cn("text-center text-sm", printResult.ok ? "text-muted-foreground" : "text-destructive")}>
                     {printResult.message}
                   </p>
                 )}
